@@ -1,9 +1,10 @@
 """Command-line reference peer client for Pied Piper.
 
-Drives the signaling rendezvous flow (Phase 2):
-- Sender creates a room, prints the 6-character code, and waits for receiver.
-- Receiver joins using the 6-character code.
-- Both peers confirm rendezvous upon receiving 'peer_joined'.
+Drives the signaling rendezvous and WebRTC peer connection flow (Phase 3):
+- Sender creates a room, prints the 6-character code, waits for receiver,
+  and establishes an aiortc WebRTC connection via SDP offer/answer and ICE candidate exchange.
+- Receiver joins using the 6-character code and completes the WebRTC handshake.
+- Both peers verify and log WebRTC connectionState == 'connected'.
 """
 
 import argparse
@@ -15,6 +16,10 @@ from typing import List, Optional
 
 from backend.config import Settings, get_settings
 from backend.signaling.client import SignalingClient, SignalingError
+from backend.transport.peer_connection import (
+    PeerConnectionError,
+    establish_webrtc_connection,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -92,9 +97,9 @@ def format_config_summary(role: str, signaling_url: str, settings: Settings, roo
     return "\n".join(lines)
 
 
-async def run_sender_rendezvous(signaling_url: str, settings: Settings) -> int:
-    """Run signaling rendezvous flow for sender peer."""
-    logger.info("Starting sender peer rendezvous with signaling server: %s", signaling_url)
+async def run_sender_flow(signaling_url: str, settings: Settings) -> int:
+    """Run signaling rendezvous and WebRTC handshake for sender peer."""
+    logger.info("Connecting to signaling server: %s", signaling_url)
     async with SignalingClient(signaling_url) as client:
         room_code = await client.create_room(timeout=10.0)
         print("\n" + "=" * 60)
@@ -104,26 +109,54 @@ async def run_sender_rendezvous(signaling_url: str, settings: Settings) -> int:
         print("=" * 60 + "\n")
 
         await client.wait_for_peer(timeout=float(settings.room_ttl_seconds))
-        print("\n" + "=" * 60)
-        print(f"  PEER JOINED ROOM {room_code}!")
-        print("  Signaling rendezvous successful.")
-        print("=" * 60 + "\n")
-        return 0
+        print("\n[+] Peer joined room. Establishing WebRTC connection...")
+
+        # Negotiate WebRTC connection
+        pc_wrapper = await establish_webrtc_connection(
+            role="send",
+            signaling_client=client,
+            settings=settings,
+            timeout=30.0,
+        )
+
+        try:
+            print("\n" + "=" * 60)
+            print("  WebRTC PEER CONNECTION ESTABLISHED!")
+            print(f"  Connection State:     {pc_wrapper.connection_state}")
+            print(f"  ICE Connection State: {pc_wrapper.ice_connection_state}")
+            print("============================================================\n")
+            return 0
+        finally:
+            await pc_wrapper.close()
 
 
-async def run_receiver_rendezvous(signaling_url: str, room_code: str, settings: Settings) -> int:
-    """Run signaling rendezvous flow for receiver peer."""
+async def run_receiver_flow(signaling_url: str, room_code: str, settings: Settings) -> int:
+    """Run signaling rendezvous and WebRTC handshake for receiver peer."""
     code = room_code.strip().upper()
-    logger.info("Starting receiver peer rendezvous for room: %s", code)
+    logger.info("Connecting to signaling server %s for room: %s", signaling_url, code)
     async with SignalingClient(signaling_url) as client:
         await client.join_room(code, timeout=10.0)
-        print(f"\nJoining room {code} on signaling server {signaling_url}...")
+        print(f"\n[+] Joining room {code} on signaling server...")
         await client.wait_for_peer(timeout=float(settings.room_ttl_seconds))
-        print("\n" + "=" * 60)
-        print(f"  SUCCESSFULLY JOINED ROOM {code}!")
-        print("  Signaling rendezvous successful.")
-        print("=" * 60 + "\n")
-        return 0
+        print("\n[+] Rendezvous confirmed. Establishing WebRTC connection...")
+
+        # Negotiate WebRTC connection
+        pc_wrapper = await establish_webrtc_connection(
+            role="receive",
+            signaling_client=client,
+            settings=settings,
+            timeout=30.0,
+        )
+
+        try:
+            print("\n" + "=" * 60)
+            print("  WebRTC PEER CONNECTION ESTABLISHED!")
+            print(f"  Connection State:     {pc_wrapper.connection_state}")
+            print(f"  ICE Connection State: {pc_wrapper.ice_connection_state}")
+            print("============================================================\n")
+            return 0
+        finally:
+            await pc_wrapper.close()
 
 
 async def async_main(argv: Optional[List[str]] = None) -> int:
@@ -143,17 +176,17 @@ async def async_main(argv: Optional[List[str]] = None) -> int:
 
     try:
         if args.role == "send":
-            return await run_sender_rendezvous(signaling_url, settings)
+            return await run_sender_flow(signaling_url, settings)
         elif args.role == "receive":
             if not args.room_code:
                 print("Error: --room-code is required for 'receive' role.", file=sys.stderr)
                 return 1
-            return await run_receiver_rendezvous(signaling_url, args.room_code, settings)
+            return await run_receiver_flow(signaling_url, args.room_code, settings)
         else:
             print(f"Error: Unknown role '{args.role}'", file=sys.stderr)
             return 1
-    except (SignalingError, OSError) as exc:
-        print(f"\nSignaling Error: {exc}", file=sys.stderr)
+    except (SignalingError, PeerConnectionError, OSError) as exc:
+        print(f"\nConnection Error: {exc}", file=sys.stderr)
         return 1
     except asyncio.CancelledError:
         print("\nOperation cancelled.", file=sys.stderr)

@@ -1,4 +1,4 @@
-"""Tests for backend.cli.peer CLI entrypoint and rendezvous flow."""
+"""Tests for backend.cli.peer CLI entrypoint, rendezvous, and WebRTC connection flow."""
 
 import asyncio
 import threading
@@ -20,7 +20,6 @@ def signaling_test_server():
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
 
-    # Wait until server is listening
     time.sleep(0.5)
     yield f"ws://127.0.0.1:{port}/ws"
 
@@ -51,28 +50,38 @@ def test_cli_peer_receive_requires_room_code(capsys):
 
 
 @pytest.mark.asyncio
-async def test_cli_rendezvous_end_to_end(signaling_test_server):
-    """Test full sender and receiver CLI rendezvous flow over live test WebSocket server."""
+async def test_cli_webrtc_end_to_end(signaling_test_server):
+    """Test full sender and receiver CLI peer WebRTC connection flow over live test WebSocket server."""
     from backend.signaling.client import SignalingClient
 
     # Connect sender client to create room
-    async with SignalingClient(signaling_test_server) as sender:
-        room_code = await sender.create_room()
+    async with SignalingClient(signaling_test_server) as sender_sig:
+        room_code = await sender_sig.create_room()
         assert len(room_code) == 6
 
-        # In parallel, run receiver CLI
-        async def run_receiver():
-            return await async_main([
-                "--role", "receive",
-                "--room-code", room_code,
-                "--signaling-url", signaling_test_server,
-            ])
+        # Run sender WebRTC connection in background task using CLI entrypoint
+        async def run_sender():
+            from backend.transport.peer_connection import establish_webrtc_connection
+            await sender_sig.wait_for_peer(timeout=5.0)
+            pc = await establish_webrtc_connection(
+                role="send",
+                signaling_client=sender_sig,
+                timeout=5.0,
+            )
+            is_conn = pc.is_connected
+            await pc.close()
+            return is_conn
 
-        receiver_task = asyncio.create_task(run_receiver())
+        sender_task = asyncio.create_task(run_sender())
 
-        # Sender awaits peer
-        await sender.wait_for_peer(timeout=5.0)
+        # Run receiver CLI
+        receiver_exit_code = await async_main([
+            "--role", "receive",
+            "--room-code", room_code,
+            "--signaling-url", signaling_test_server,
+        ])
 
-        # Receiver should complete rendezvous cleanly with 0
-        receiver_exit_code = await asyncio.wait_for(receiver_task, timeout=5.0)
+        sender_connected = await asyncio.wait_for(sender_task, timeout=5.0)
+
         assert receiver_exit_code == 0
+        assert sender_connected is True
