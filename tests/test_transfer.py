@@ -96,6 +96,51 @@ async def test_end_to_end_file_transfer(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_multimegabyte_file_transfer(tmp_path: Path):
+    """Verify non-trivial multi-megabyte (5 MB) file transfer across DataChannels."""
+    sender_dir = tmp_path / "sender_large"
+    receiver_dir = tmp_path / "receiver_large"
+    sender_dir.mkdir()
+    receiver_dir.mkdir()
+
+    # 5 MB file (5 * 1024 * 1024 bytes) = 320 chunks of 16 KB
+    large_file = sender_dir / "large_5mb_dataset.bin"
+    chunk_pattern = b"PIED_PIPER_5MB_TRANSFER_BLOCK_INDEX_1234567890abcdefghijklmnopqrstuvwxyz" * 256  # 18,432 bytes
+    total_target_bytes = 5 * 1024 * 1024
+    content = (chunk_pattern * (total_target_bytes // len(chunk_pattern) + 1))[:total_target_bytes]
+    large_file.write_bytes(content)
+    assert len(content) == total_target_bytes
+
+    pc1, pc2 = await create_connected_peer_pair()
+
+    try:
+        sender = FileSender(channels=pc1.channels, filepath=large_file, chunk_size=16384)
+        receiver = FileReceiver(channels=pc2.channels, output_dir=receiver_dir)
+
+        sender_summary, receiver_summary = await asyncio.gather(
+            sender.send(timeout=60.0),
+            receiver.receive(timeout=60.0),
+        )
+
+        assert sender_summary.size_bytes == total_target_bytes
+        assert receiver_summary.size_bytes == total_target_bytes
+        assert sender_summary.sha256 == receiver_summary.sha256
+        assert sender_summary.total_chunks == 320
+        assert sender_summary.duration_seconds > 0
+        assert sender_summary.throughput_mbps > 0
+
+        # Independent byte-for-byte verification
+        received_large_file = receiver_dir / "large_5mb_dataset.bin"
+        assert received_large_file.is_file()
+        assert received_large_file.stat().st_size == total_target_bytes
+        assert received_large_file.read_bytes() == content
+
+    finally:
+        await pc1.close()
+        await pc2.close()
+
+
+@pytest.mark.asyncio
 async def test_corrupted_chunk_detection(tmp_path: Path):
     """Verify that a corrupted chunk is detected by receiver and causes clean transfer failure."""
     sender_dir = tmp_path / "sender"
