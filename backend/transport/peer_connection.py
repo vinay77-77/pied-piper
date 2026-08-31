@@ -15,6 +15,7 @@ from aiortc.sdp import candidate_from_sdp, candidate_to_sdp
 
 from backend.config import Settings, get_settings
 from backend.signaling.client import SignalingClient, SignalingError
+from backend.transport.data_channels import DataChannelManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class PeerConnectionError(Exception):
 
 
 class PeerConnectionWrapper:
-    """Wraps aiortc RTCPeerConnection, managing STUN configuration, SDP, and ICE candidates."""
+    """Wraps aiortc RTCPeerConnection and DataChannels, managing STUN, SDP, and ICE."""
 
     def __init__(self, settings: Optional[Settings] = None, role: str = "send") -> None:
         self.settings: Settings = settings if settings is not None else get_settings()
@@ -48,16 +49,19 @@ class PeerConnectionWrapper:
         self.configuration = RTCConfiguration(iceServers=ice_servers)
         self.pc = RTCPeerConnection(configuration=self.configuration)
 
+        self.channels = DataChannelManager()
         self._connected_event = asyncio.Event()
         self._failed_event = asyncio.Event()
         self._pending_candidates: List[Dict[str, Any]] = []
 
+        # Setup DataChannels based on role
+        if self.role == "send":
+            self.channels.setup_offerer_channels(self.pc)
+        else:
+            self.channels.setup_answerer_channels(self.pc)
+
         # Attach connection state listeners for observability
         self._setup_listeners()
-
-        # If offerer/sender, create initial channel to generate SCTP transport m-line in offer
-        if self.role == "send":
-            self._initial_channel = self.pc.createDataChannel("control", ordered=True)
 
     def _setup_listeners(self) -> None:
         """Attach state change handlers to RTCPeerConnection."""
@@ -191,10 +195,15 @@ class PeerConnectionWrapper:
         if self._failed_event.is_set():
             raise PeerConnectionError(f"WebRTC connection failed (state: {self.pc.connectionState})")
 
+    async def wait_channels_open(self, timeout: float = 15.0) -> None:
+        """Wait until both control and data channels are open."""
+        await self.channels.wait_channels_open(timeout=timeout)
+
     async def close(self) -> None:
-        """Close the RTCPeerConnection cleanly."""
+        """Close DataChannels and RTCPeerConnection cleanly."""
+        self.channels.close()
         await self.pc.close()
-        logger.info("RTCPeerConnection closed")
+        logger.info("PeerConnectionWrapper closed")
 
 
 async def establish_webrtc_connection(
@@ -205,7 +214,7 @@ async def establish_webrtc_connection(
 ) -> PeerConnectionWrapper:
     """Coordinate full WebRTC SDP offer/answer and ICE exchange through signaling client.
 
-    Returns the established PeerConnectionWrapper once in 'connected' state.
+    Returns the established PeerConnectionWrapper with open DataChannels.
     """
     wrapper = PeerConnectionWrapper(settings=settings, role=role)
 
@@ -247,13 +256,16 @@ async def establish_webrtc_connection(
 
     try:
         if role == "send":
-            # Offerer creates and dispatches offer
             offer_signal = await wrapper.create_offer()
             await signaling_client.send_signal(offer_signal)
 
         # Wait until connectionState or iceConnectionState reaches connected
         await wrapper.wait_connected(timeout=timeout)
-        logger.info("WebRTC connection successfully established! Reporting connected to signaling...")
+        logger.info("WebRTC connection established. Waiting for DataChannels to open...")
+
+        # Await DataChannels open
+        await wrapper.wait_channels_open(timeout=timeout)
+        logger.info("DataChannels open. Reporting connected to signaling server...")
         await signaling_client.report_connected()
         return wrapper
 
