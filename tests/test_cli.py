@@ -1,6 +1,7 @@
-"""Tests for backend.cli.peer CLI entrypoint, rendezvous, WebRTC, and DataChannels."""
+"""Tests for backend.cli.peer CLI entrypoint, argument validation, and live file transfer."""
 
 import asyncio
+from pathlib import Path
 import threading
 import time
 import pytest
@@ -49,21 +50,37 @@ def test_cli_peer_receive_requires_room_code(capsys):
     assert "--room-code is required" in captured.err
 
 
-@pytest.mark.asyncio
-async def test_cli_datachannels_end_to_end(signaling_test_server):
-    """Test full sender and receiver CLI peer WebRTC and DataChannel verification flow concurrently."""
-    from backend.signaling.client import SignalingClient
+def test_cli_peer_send_requires_file(capsys):
+    """Verify send role without --file returns exit code 1."""
+    exit_code = main(["--role", "send"])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "--file is required" in captured.err
 
-    # Connect sender client to create room
+
+@pytest.mark.asyncio
+async def test_cli_file_transfer_end_to_end(signaling_test_server, tmp_path: Path):
+    """Test full end-to-end CLI peer file transfer over live test WebSocket signaling server."""
+    from backend.signaling.client import SignalingClient
+    from backend.transport.peer_connection import establish_webrtc_connection
+    from backend.transfer.sender import FileSender
+
+    sender_dir = tmp_path / "cli_sender"
+    receiver_dir = tmp_path / "cli_receiver"
+    sender_dir.mkdir()
+    receiver_dir.mkdir()
+
+    # Create a 32 KB test file
+    test_file = sender_dir / "cli_test_doc.bin"
+    file_bytes = b"PIED_PIPER_CLI_E2E_FILE_TRANSFER_TEST_DATA_" * 750
+    test_file.write_bytes(file_bytes)
+
+    # Sender client creates room
     async with SignalingClient(signaling_test_server) as sender_sig:
         room_code = await sender_sig.create_room()
         assert len(room_code) == 6
 
-        from backend.transport.peer_connection import establish_webrtc_connection
-        from backend.cli.peer import TEST_BINARY_SENDER, TEST_BINARY_RECEIVER
-        import json
-
-        async def run_sender_peer():
+        async def run_sender_process():
             await sender_sig.wait_for_peer(timeout=10.0)
             pc_wrapper = await establish_webrtc_connection(
                 role="send",
@@ -71,36 +88,37 @@ async def test_cli_datachannels_end_to_end(signaling_test_server):
                 timeout=10.0,
             )
             try:
-                # 1. Send test control ping
-                pc_wrapper.channels.send_control({"type": "ping", "message": "ping from sender"})
-                # 2. Send test binary payload
-                pc_wrapper.channels.send_data(TEST_BINARY_SENDER)
-
-                # 3. Receive pong
-                pong_str = await pc_wrapper.channels.receive_control(timeout=10.0)
-                pong = json.loads(pong_str)
-                assert pong["type"] == "pong"
-
-                # 4. Receive binary response
-                data = await pc_wrapper.channels.receive_data(timeout=10.0)
-                assert data == TEST_BINARY_RECEIVER
+                sender = FileSender(
+                    channels=pc_wrapper.channels,
+                    filepath=test_file,
+                    chunk_size=8192,
+                )
+                summary = await sender.send(timeout=10.0)
+                assert summary.size_bytes == len(file_bytes)
+                # Keep connection open until receiver finishes
+                await asyncio.sleep(0.5)
                 return 0
             finally:
                 await pc_wrapper.close()
 
-        async def run_receiver_cli():
-            # Run receiver CLI
+        async def run_receiver_cli_process():
             return await async_main([
                 "--role", "receive",
                 "--room-code", room_code,
+                "--output-dir", str(receiver_dir),
                 "--signaling-url", signaling_test_server,
             ])
 
-        # Run sender peer and receiver CLI concurrently
+        # Run sender and receiver concurrently
         sender_code, receiver_code = await asyncio.gather(
-            run_sender_peer(),
-            run_receiver_cli(),
+            run_sender_process(),
+            run_receiver_cli_process(),
         )
 
-        assert receiver_code == 0
         assert sender_code == 0
+        assert receiver_code == 0
+
+        # Verify file is received and matches byte-for-byte
+        received_file = receiver_dir / "cli_test_doc.bin"
+        assert received_file.is_file()
+        assert received_file.read_bytes() == file_bytes

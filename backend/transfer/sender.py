@@ -130,6 +130,9 @@ class FileSender:
         complete_msg = TransferCompleteMessage(sha256=file_sha256)
         self.channels.send_control(complete_msg.model_dump())
 
+        # Allow final control frame to flush across SCTP transport
+        await asyncio.sleep(0.2)
+
         duration = max(time.time() - start_time, 0.001)
         throughput_mbps = (file_size * 8) / (duration * 1_000_000)
 

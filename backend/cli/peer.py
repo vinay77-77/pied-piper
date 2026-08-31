@@ -1,16 +1,13 @@
 """Command-line reference peer client for Pied Piper.
 
-Drives the signaling rendezvous, WebRTC peer connection, and DataChannel verification flow (Phase 4):
-- Sender creates room, establishes WebRTC connection, and opens 'control' and 'data' channels.
-- Receiver joins room, completes WebRTC connection, and receives 'control' and 'data' channels.
-- Both peers verify bidirectional communication:
-  1. Control channel: JSON ping/pong message round-trip.
-  2. Data channel: Binary payload transfer verified byte-for-byte.
+Full implementation of Phase 5 single-file transfer protocol:
+- Sender creates room, connects WebRTC, and streams file sequentially over DataChannels.
+- Receiver joins using room code, connects WebRTC, verifies per-chunk & whole-file SHA-256,
+  and saves verified file to the specified output directory.
 """
 
 import argparse
 import asyncio
-import json
 import logging
 import sys
 import time
@@ -19,6 +16,8 @@ from typing import List, Optional
 
 from backend.config import Settings, get_settings
 from backend.signaling.client import SignalingClient, SignalingError
+from backend.transfer.receiver import FileReceiver
+from backend.transfer.sender import FileSender, IntegrityError, TransferError, TransferSummary
 from backend.transport.data_channels import DataChannelError
 from backend.transport.peer_connection import (
     PeerConnectionError,
@@ -30,9 +29,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("pied-piper-peer")
-
-TEST_BINARY_SENDER = b"PIED_PIPER_DATA_CHANNEL_TEST_PAYLOAD_FROM_SENDER_\x00\x01\xfe\xff\x42"
-TEST_BINARY_RECEIVER = b"PIED_PIPER_DATA_CHANNEL_TEST_PAYLOAD_FROM_RECEIVER_\x00\x01\xfe\xff\x24"
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -60,65 +56,68 @@ def create_parser() -> argparse.ArgumentParser:
         "-c",
         type=str,
         default=None,
-        help="6-character room code to join (required for 'receive' role in Phase 2+)",
+        help="6-character room code to join (required for 'receive' role)",
     )
     parser.add_argument(
         "--file",
         "-f",
         type=Path,
         default=None,
-        help="Path to file to send (applicable for 'send' role in Phase 5+)",
+        help="Path to file to send (required for 'send' role in file transfer mode)",
     )
     parser.add_argument(
         "--output-dir",
         "-o",
         type=Path,
-        default=None,
-        help="Directory to save received files (applicable for 'receive' role in Phase 5+)",
+        default=Path("./received_files"),
+        help="Directory to save received files (defaults to ./received_files)",
     )
     return parser
 
 
-def format_config_summary(role: str, signaling_url: str, settings: Settings, room_code: Optional[str] = None) -> str:
-    """Format resolved peer parameters and configuration into a clean summary."""
-    stun_display = ", ".join(settings.stun_urls_list) if settings.stun_urls_list else "None"
-    lines = [
-        "============================================================",
-        "              Pied Piper — CLI Reference Peer               ",
-        "============================================================",
-        f"Role:             {role}",
-        f"Signaling URL:    {signaling_url}",
-    ]
-    if room_code:
-        lines.append(f"Room Code:        {room_code}")
-    lines.extend([
-        f"Environment:      {settings.environment}",
-        f"Log Level:        {settings.log_level}",
-        f"Chunk Size:       {settings.chunk_size_bytes} bytes",
-        f"Sliding Window:   {settings.sliding_window_size}",
-        f"STUN URLs:        {stun_display}",
-        f"SQLite DB Path:   {settings.sqlite_path}",
-        f"Room TTL:         {settings.room_ttl_seconds}s",
-        "============================================================",
-    ])
-    return "\n".join(lines)
+def format_progress_bar(percent: float, current: int, total: int, bar_length: int = 30) -> str:
+    """Render an ASCII progress bar string."""
+    filled_length = int(bar_length * percent / 100) if total > 0 else bar_length
+    bar = "█" * filled_length + "░" * (bar_length - filled_length)
+    return f"\r[Transfer] |{bar}| {percent:6.1f}% ({current}/{total} chunks)"
 
 
-async def run_sender_flow(signaling_url: str, settings: Settings) -> int:
-    """Run signaling rendezvous, WebRTC handshake, and DataChannel verification for sender."""
+def print_transfer_summary(summary: TransferSummary, role: str) -> None:
+    """Print formatted summary table of transfer results."""
+    print("\n" + "=" * 62)
+    print("           FILE TRANSFER COMPLETED SUCCESSFULLY!              ")
+    print("=" * 62)
+    print(f"  Role:             {role.upper()}")
+    print(f"  File Name:        {summary.filename}")
+    if summary.filepath:
+        print(f"  Saved Path:       {summary.filepath.resolve()}")
+    print(f"  File Size:        {summary.size_bytes:,} bytes")
+    print(f"  Total Chunks:     {summary.total_chunks}")
+    print(f"  SHA-256 Hash:     {summary.sha256}")
+    print(f"  Duration:         {summary.duration_seconds:.2f}s")
+    print(f"  Throughput:       {summary.throughput_mbps:.2f} Mbps")
+    print("=" * 62 + "\n")
+
+
+async def run_sender_flow(signaling_url: str, filepath: Path, settings: Settings) -> int:
+    """Run sender workflow: room creation, WebRTC negotiation, and file streaming."""
+    if not filepath.is_file():
+        print(f"Error: File to send not found: {filepath}", file=sys.stderr)
+        return 1
+
     logger.info("Connecting to signaling server: %s", signaling_url)
     async with SignalingClient(signaling_url) as client:
         room_code = await client.create_room(timeout=10.0)
         print("\n" + "=" * 60)
         print(f"  ROOM CREATED: {room_code}")
         print("  Share this 6-character room code with the receiving peer.")
+        print(f"  Ready to send: {filepath.name} ({filepath.stat().st_size:,} bytes)")
         print("  Waiting for peer to join...")
         print("=" * 60 + "\n")
 
         await client.wait_for_peer(timeout=float(settings.room_ttl_seconds))
-        print("\n[+] Peer joined room. Establishing WebRTC connection & DataChannels...")
+        print("\n[+] Peer joined. Establishing WebRTC connection & DataChannels...")
 
-        # Negotiate WebRTC connection and wait for DataChannels
         pc_wrapper = await establish_webrtc_connection(
             role="send",
             signaling_client=client,
@@ -127,45 +126,33 @@ async def run_sender_flow(signaling_url: str, settings: Settings) -> int:
         )
 
         try:
-            print("\n[+] Connection established. Running DataChannel verification...")
+            print(f"\n[+] Starting file transfer: '{filepath.name}'")
 
-            # 1. Send test control ping
-            ping_payload = {"type": "ping", "message": "ping from sender", "ts": time.time()}
-            pc_wrapper.channels.send_control(ping_payload)
-            logger.info("Sent test ping on 'control' channel")
+            def on_progress(pct: float, current: int, total: int) -> None:
+                sys.stdout.write(format_progress_bar(pct, current, total))
+                sys.stdout.flush()
 
-            # 2. Send test binary payload on data channel
-            pc_wrapper.channels.send_data(TEST_BINARY_SENDER)
-            logger.info("Sent %d bytes on 'data' channel", len(TEST_BINARY_SENDER))
+            sender = FileSender(
+                channels=pc_wrapper.channels,
+                filepath=filepath,
+                chunk_size=settings.chunk_size_bytes,
+                progress_callback=on_progress,
+            )
 
-            # 3. Receive pong on control channel
-            pong_msg_str = await pc_wrapper.channels.receive_control(timeout=10.0)
-            pong_msg = json.loads(pong_msg_str)
-            logger.info("Received control reply: %s", pong_msg)
+            summary = await sender.send(timeout=60.0)
+            print()  # newline after progress bar
+            print_transfer_summary(summary, role="send")
 
-            # 4. Receive binary response on data channel
-            received_data = await pc_wrapper.channels.receive_data(timeout=10.0)
-            if received_data != TEST_BINARY_RECEIVER:
-                raise DataChannelError("Received binary payload did not match expected receiver bytes")
-            logger.info("Received %d bytes on 'data' channel (byte-for-byte verified)", len(received_data))
-
-            # Drain buffer before exit
-            await asyncio.sleep(0.2)
-
-            print("\n" + "=" * 60)
-            print("  DATACHANNELS ESTABLISHED & VERIFIED!")
-            print(f"  Connection State: {pc_wrapper.connection_state}")
-            print("  Control Channel:  OPEN (JSON/text ping-pong verified)")
-            print(f"  Data Channel:     OPEN ({len(received_data)} bytes verified byte-for-byte)")
-            print("============================================================\n")
+            # Allow final frames to flush before teardown
+            await asyncio.sleep(0.3)
             return 0
 
         finally:
             await pc_wrapper.close()
 
 
-async def run_receiver_flow(signaling_url: str, room_code: str, settings: Settings) -> int:
-    """Run signaling rendezvous, WebRTC handshake, and DataChannel verification for receiver."""
+async def run_receiver_flow(signaling_url: str, room_code: str, output_dir: Path, settings: Settings) -> int:
+    """Run receiver workflow: room join, WebRTC negotiation, and verified file reception."""
     code = room_code.strip().upper()
     logger.info("Connecting to signaling server %s for room: %s", signaling_url, code)
     async with SignalingClient(signaling_url) as client:
@@ -174,7 +161,6 @@ async def run_receiver_flow(signaling_url: str, room_code: str, settings: Settin
         await client.wait_for_peer(timeout=float(settings.room_ttl_seconds))
         print("\n[+] Rendezvous confirmed. Establishing WebRTC connection & DataChannels...")
 
-        # Negotiate WebRTC connection and wait for DataChannels
         pc_wrapper = await establish_webrtc_connection(
             role="receive",
             signaling_client=client,
@@ -183,37 +169,23 @@ async def run_receiver_flow(signaling_url: str, room_code: str, settings: Settin
         )
 
         try:
-            print("\n[+] Connection established. Running DataChannel verification...")
+            print(f"\n[+] Awaiting file offer from sender (output directory: {output_dir.resolve()})...")
 
-            # 1. Receive test control ping
-            ping_msg_str = await pc_wrapper.channels.receive_control(timeout=10.0)
-            ping_msg = json.loads(ping_msg_str)
-            logger.info("Received control message: %s", ping_msg)
+            def on_progress(pct: float, current: int, total: int) -> None:
+                sys.stdout.write(format_progress_bar(pct, current, total))
+                sys.stdout.flush()
 
-            # 2. Receive test binary payload on data channel
-            received_data = await pc_wrapper.channels.receive_data(timeout=10.0)
-            if received_data != TEST_BINARY_SENDER:
-                raise DataChannelError("Received binary payload did not match expected sender bytes")
-            logger.info("Received %d bytes on 'data' channel (byte-for-byte verified)", len(received_data))
+            receiver = FileReceiver(
+                channels=pc_wrapper.channels,
+                output_dir=output_dir,
+                progress_callback=on_progress,
+            )
 
-            # 3. Send control pong reply
-            pong_payload = {"type": "pong", "message": "pong from receiver", "ts": time.time()}
-            pc_wrapper.channels.send_control(pong_payload)
-            logger.info("Sent test pong on 'control' channel")
+            summary = await receiver.receive(timeout=60.0)
+            print()  # newline after progress bar
+            print_transfer_summary(summary, role="receive")
 
-            # 4. Send binary response on data channel
-            pc_wrapper.channels.send_data(TEST_BINARY_RECEIVER)
-            logger.info("Sent %d bytes on 'data' channel", len(TEST_BINARY_RECEIVER))
-
-            # Drain buffer before exit
-            await asyncio.sleep(0.2)
-
-            print("\n" + "=" * 60)
-            print("  DATACHANNELS ESTABLISHED & VERIFIED!")
-            print(f"  Connection State: {pc_wrapper.connection_state}")
-            print("  Control Channel:  OPEN (JSON/text ping-pong verified)")
-            print(f"  Data Channel:     OPEN ({len(received_data)} bytes verified byte-for-byte)")
-            print("============================================================\n")
+            await asyncio.sleep(0.3)
             return 0
 
         finally:
@@ -228,26 +200,40 @@ async def async_main(argv: Optional[List[str]] = None) -> int:
     settings = get_settings()
     signaling_url = args.signaling_url if args.signaling_url is not None else settings.signaling_url
 
-    print(format_config_summary(
-        role=args.role,
-        signaling_url=signaling_url,
-        settings=settings,
-        room_code=args.room_code,
-    ))
+    print(
+        "============================================================",
+        "\n              Pied Piper — CLI Reference Peer               \n"
+        "============================================================",
+        f"\nRole:             {args.role}",
+        f"\nSignaling URL:    {signaling_url}",
+    )
+    if args.room_code:
+        print(f"Room Code:        {args.room_code}")
+    if args.file:
+        print(f"File to Send:     {args.file}")
+    if args.output_dir:
+        print(f"Output Directory: {args.output_dir}")
+    print("============================================================\n")
 
     try:
         if args.role == "send":
-            return await run_sender_flow(signaling_url, settings)
+            if not args.file:
+                print("Error: --file is required for 'send' role.", file=sys.stderr)
+                return 1
+            return await run_sender_flow(signaling_url, args.file, settings)
+
         elif args.role == "receive":
             if not args.room_code:
                 print("Error: --room-code is required for 'receive' role.", file=sys.stderr)
                 return 1
-            return await run_receiver_flow(signaling_url, args.room_code, settings)
+            return await run_receiver_flow(signaling_url, args.room_code, args.output_dir, settings)
+
         else:
             print(f"Error: Unknown role '{args.role}'", file=sys.stderr)
             return 1
-    except (SignalingError, PeerConnectionError, DataChannelError, OSError) as exc:
-        print(f"\nConnection / Transport Error: {exc}", file=sys.stderr)
+
+    except (SignalingError, PeerConnectionError, DataChannelError, TransferError, IntegrityError, OSError) as exc:
+        print(f"\nTransfer Error: {exc}", file=sys.stderr)
         return 1
     except asyncio.CancelledError:
         print("\nOperation cancelled.", file=sys.stderr)
