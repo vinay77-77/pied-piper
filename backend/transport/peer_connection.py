@@ -1,1 +1,269 @@
-"""aiortc RTCPeerConnection wrapper and ICE management (Phase 3+)."""
+"""WebRTC RTCPeerConnection wrapper, STUN/ICE configuration, and connection handshake."""
+
+import asyncio
+import logging
+from typing import Any, Callable, Dict, List, Optional
+
+from aiortc import (
+    RTCConfiguration,
+    RTCIceCandidate,
+    RTCIceServer,
+    RTCPeerConnection,
+    RTCSessionDescription,
+)
+from aiortc.sdp import candidate_from_sdp, candidate_to_sdp
+
+from backend.config import Settings, get_settings
+from backend.signaling.client import SignalingClient, SignalingError
+
+logger = logging.getLogger(__name__)
+
+
+class PeerConnectionError(Exception):
+    """Exception raised when a WebRTC transport error occurs."""
+    pass
+
+
+class PeerConnectionWrapper:
+    """Wraps aiortc RTCPeerConnection, managing STUN configuration, SDP, and ICE candidates."""
+
+    def __init__(self, settings: Optional[Settings] = None, role: str = "send") -> None:
+        self.settings: Settings = settings if settings is not None else get_settings()
+        self.role: str = role
+
+        # Build STUN/TURN server configuration
+        ice_servers: List[RTCIceServer] = []
+        for stun_url in self.settings.stun_urls_list:
+            ice_servers.append(RTCIceServer(urls=stun_url))
+
+        if self.settings.turn_url:
+            ice_servers.append(
+                RTCIceServer(
+                    urls=self.settings.turn_url,
+                    username=self.settings.turn_username or None,
+                    credential=self.settings.turn_credential or None,
+                )
+            )
+
+        self.configuration = RTCConfiguration(iceServers=ice_servers)
+        self.pc = RTCPeerConnection(configuration=self.configuration)
+
+        self._connected_event = asyncio.Event()
+        self._failed_event = asyncio.Event()
+        self._pending_candidates: List[Dict[str, Any]] = []
+
+        # Attach connection state listeners for observability
+        self._setup_listeners()
+
+        # If offerer/sender, create initial channel to generate SCTP transport m-line in offer
+        if self.role == "send":
+            self._initial_channel = self.pc.createDataChannel("control", ordered=True)
+
+    def _setup_listeners(self) -> None:
+        """Attach state change handlers to RTCPeerConnection."""
+        @self.pc.on("connectionstatechange")
+        def on_connection_state_change() -> None:
+            state = self.pc.connectionState
+            logger.info("RTCPeerConnection connectionState -> %s", state)
+            if state in ("connected", "completed"):
+                self._connected_event.set()
+            elif state in ("failed", "closed"):
+                self._failed_event.set()
+
+        @self.pc.on("iceconnectionstatechange")
+        def on_ice_state_change() -> None:
+            state = self.pc.iceConnectionState
+            logger.info("RTCPeerConnection iceConnectionState -> %s", state)
+            if state in ("connected", "completed"):
+                self._connected_event.set()
+            elif state == "failed":
+                self._failed_event.set()
+
+    @property
+    def connection_state(self) -> str:
+        """Current WebRTC connection state."""
+        return self.pc.connectionState
+
+    @property
+    def ice_connection_state(self) -> str:
+        """Current ICE connection state."""
+        return self.pc.iceConnectionState
+
+    @property
+    def is_connected(self) -> bool:
+        """Check if WebRTC or ICE state is connected/completed."""
+        return (
+            self.pc.connectionState in ("connected", "completed")
+            or self.pc.iceConnectionState in ("connected", "completed")
+        )
+
+    async def create_offer(self) -> Dict[str, Any]:
+        """Create SDP offer, set local description, and return offer signal dictionary."""
+        offer = await self.pc.createOffer()
+        await self.pc.setLocalDescription(offer)
+        logger.info("SDP offer created and set as local description")
+        return {"type": "offer", "sdp": self.pc.localDescription.sdp}
+
+    async def handle_offer(self, offer_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle incoming SDP offer, create answer, set descriptions, and return answer signal dictionary."""
+        offer_sdp = offer_data.get("sdp")
+        if not offer_sdp:
+            raise PeerConnectionError("Missing SDP in offer payload")
+
+        desc = RTCSessionDescription(sdp=offer_sdp, type="offer")
+        await self.pc.setRemoteDescription(desc)
+        logger.info("Remote SDP offer set successfully")
+
+        # Flush any queued ICE candidates received before remote description
+        await self._flush_pending_candidates()
+
+        answer = await self.pc.createAnswer()
+        await self.pc.setLocalDescription(answer)
+        logger.info("SDP answer created and set as local description")
+        return {"type": "answer", "sdp": self.pc.localDescription.sdp}
+
+    async def handle_answer(self, answer_data: Dict[str, Any]) -> None:
+        """Handle incoming SDP answer and set remote description."""
+        answer_sdp = answer_data.get("sdp")
+        if not answer_sdp:
+            raise PeerConnectionError("Missing SDP in answer payload")
+
+        desc = RTCSessionDescription(sdp=answer_sdp, type="answer")
+        await self.pc.setRemoteDescription(desc)
+        logger.info("Remote SDP answer set successfully")
+
+        # Flush any queued ICE candidates
+        await self._flush_pending_candidates()
+
+    async def handle_candidate(self, candidate_data: Dict[str, Any]) -> None:
+        """Handle incoming ICE candidate payload, applying or queueing if remote description not yet set."""
+        if self.pc.remoteDescription is None:
+            logger.debug("Queueing ICE candidate until remote description is set")
+            self._pending_candidates.append(candidate_data)
+            return
+        await self._apply_candidate(candidate_data)
+
+    async def _apply_candidate(self, candidate_data: Dict[str, Any]) -> None:
+        """Parse and add a single ICE candidate to the RTCPeerConnection."""
+        sdp_str = candidate_data.get("candidate")
+        if not sdp_str:
+            await self.pc.addIceCandidate(None)
+            return
+
+        try:
+            cand = candidate_from_sdp(sdp_str)
+            cand.sdpMid = candidate_data.get("sdpMid")
+            cand.sdpMLineIndex = candidate_data.get("sdpMLineIndex")
+            await self.pc.addIceCandidate(cand)
+            logger.debug("Applied ICE candidate: %s", cand)
+        except Exception as exc:
+            logger.warning("Failed to apply ICE candidate: %s", exc)
+
+    async def _flush_pending_candidates(self) -> None:
+        """Apply all pending ICE candidates once remote description is set."""
+        if not self._pending_candidates:
+            return
+        logger.info("Flushing %d pending ICE candidate(s)", len(self._pending_candidates))
+        for cand_data in self._pending_candidates:
+            await self._apply_candidate(cand_data)
+        self._pending_candidates.clear()
+
+    async def wait_connected(self, timeout: float = 30.0) -> None:
+        """Wait until connection reaches 'connected' or 'completed' state."""
+        if self.is_connected:
+            return
+
+        done, pending = await asyncio.wait(
+            [
+                asyncio.create_task(self._connected_event.wait()),
+                asyncio.create_task(self._failed_event.wait()),
+            ],
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for task in pending:
+            task.cancel()
+
+        if not done:
+            raise PeerConnectionError(f"WebRTC connection timed out after {timeout}s (state: {self.pc.connectionState})")
+
+        if self._failed_event.is_set():
+            raise PeerConnectionError(f"WebRTC connection failed (state: {self.pc.connectionState})")
+
+    async def close(self) -> None:
+        """Close the RTCPeerConnection cleanly."""
+        await self.pc.close()
+        logger.info("RTCPeerConnection closed")
+
+
+async def establish_webrtc_connection(
+    role: str,
+    signaling_client: SignalingClient,
+    settings: Optional[Settings] = None,
+    timeout: float = 30.0,
+) -> PeerConnectionWrapper:
+    """Coordinate full WebRTC SDP offer/answer and ICE exchange through signaling client.
+
+    Returns the established PeerConnectionWrapper once in 'connected' state.
+    """
+    wrapper = PeerConnectionWrapper(settings=settings, role=role)
+
+    # Relay local ICE candidate events to peer via signaling
+    @wrapper.pc.on("icecandidate")
+    async def on_local_candidate(candidate: Optional[RTCIceCandidate]) -> None:
+        if candidate is not None:
+            cand_payload = {
+                "type": "candidate",
+                "candidate": candidate_to_sdp(candidate),
+                "sdpMid": candidate.sdpMid,
+                "sdpMLineIndex": candidate.sdpMLineIndex,
+            }
+            try:
+                await signaling_client.send_signal(cand_payload)
+            except Exception as exc:
+                logger.warning("Failed to send local ICE candidate: %s", exc)
+
+    async def signaling_signal_loop() -> None:
+        """Process incoming signaling signals for SDP and ICE exchange."""
+        async for msg in signaling_client.messages():
+            if msg.get("type") != "signal":
+                continue
+            payload = msg.get("payload", {})
+            signal_type = payload.get("type")
+
+            if signal_type == "offer" and role == "receive":
+                answer_signal = await wrapper.handle_offer(payload)
+                await signaling_client.send_signal(answer_signal)
+            elif signal_type == "answer" and role == "send":
+                await wrapper.handle_answer(payload)
+            elif signal_type == "candidate":
+                await wrapper.handle_candidate(payload)
+
+            if wrapper.is_connected:
+                break
+
+    signal_task = asyncio.create_task(signaling_signal_loop())
+
+    try:
+        if role == "send":
+            # Offerer creates and dispatches offer
+            offer_signal = await wrapper.create_offer()
+            await signaling_client.send_signal(offer_signal)
+
+        # Wait until connectionState or iceConnectionState reaches connected
+        await wrapper.wait_connected(timeout=timeout)
+        logger.info("WebRTC connection successfully established! Reporting connected to signaling...")
+        await signaling_client.report_connected()
+        return wrapper
+
+    except Exception as exc:
+        await wrapper.close()
+        raise PeerConnectionError(f"WebRTC establishment failed: {exc}") from exc
+    finally:
+        if not signal_task.done():
+            signal_task.cancel()
+            try:
+                await signal_task
+            except asyncio.CancelledError:
+                pass
