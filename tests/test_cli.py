@@ -1,4 +1,4 @@
-"""Tests for backend.cli.peer CLI entrypoint, rendezvous, and WebRTC connection flow."""
+"""Tests for backend.cli.peer CLI entrypoint, rendezvous, WebRTC, and DataChannels."""
 
 import asyncio
 import threading
@@ -50,8 +50,8 @@ def test_cli_peer_receive_requires_room_code(capsys):
 
 
 @pytest.mark.asyncio
-async def test_cli_webrtc_end_to_end(signaling_test_server):
-    """Test full sender and receiver CLI peer WebRTC connection flow over live test WebSocket server."""
+async def test_cli_datachannels_end_to_end(signaling_test_server):
+    """Test full sender and receiver CLI peer WebRTC and DataChannel verification flow concurrently."""
     from backend.signaling.client import SignalingClient
 
     # Connect sender client to create room
@@ -59,29 +59,48 @@ async def test_cli_webrtc_end_to_end(signaling_test_server):
         room_code = await sender_sig.create_room()
         assert len(room_code) == 6
 
-        # Run sender WebRTC connection in background task using CLI entrypoint
-        async def run_sender():
-            from backend.transport.peer_connection import establish_webrtc_connection
-            await sender_sig.wait_for_peer(timeout=5.0)
-            pc = await establish_webrtc_connection(
+        from backend.transport.peer_connection import establish_webrtc_connection
+        from backend.cli.peer import TEST_BINARY_SENDER, TEST_BINARY_RECEIVER
+        import json
+
+        async def run_sender_peer():
+            await sender_sig.wait_for_peer(timeout=10.0)
+            pc_wrapper = await establish_webrtc_connection(
                 role="send",
                 signaling_client=sender_sig,
-                timeout=5.0,
+                timeout=10.0,
             )
-            is_conn = pc.is_connected
-            await pc.close()
-            return is_conn
+            try:
+                # 1. Send test control ping
+                pc_wrapper.channels.send_control({"type": "ping", "message": "ping from sender"})
+                # 2. Send test binary payload
+                pc_wrapper.channels.send_data(TEST_BINARY_SENDER)
 
-        sender_task = asyncio.create_task(run_sender())
+                # 3. Receive pong
+                pong_str = await pc_wrapper.channels.receive_control(timeout=10.0)
+                pong = json.loads(pong_str)
+                assert pong["type"] == "pong"
 
-        # Run receiver CLI
-        receiver_exit_code = await async_main([
-            "--role", "receive",
-            "--room-code", room_code,
-            "--signaling-url", signaling_test_server,
-        ])
+                # 4. Receive binary response
+                data = await pc_wrapper.channels.receive_data(timeout=10.0)
+                assert data == TEST_BINARY_RECEIVER
+                return 0
+            finally:
+                await pc_wrapper.close()
 
-        sender_connected = await asyncio.wait_for(sender_task, timeout=5.0)
+        async def run_receiver_cli():
+            # Run receiver CLI
+            return await async_main([
+                "--role", "receive",
+                "--room-code", room_code,
+                "--signaling-url", signaling_test_server,
+            ])
 
-        assert receiver_exit_code == 0
-        assert sender_connected is True
+        # Run sender peer and receiver CLI concurrently
+        sender_code, receiver_code = await asyncio.gather(
+            run_sender_peer(),
+            run_receiver_cli(),
+        )
+
+        assert receiver_code == 0
+        assert sender_code == 0
