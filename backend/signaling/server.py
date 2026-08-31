@@ -1,5 +1,6 @@
 """FastAPI WebSocket signaling server for peer rendezvous and message relay."""
 
+import argparse
 import asyncio
 import json
 import logging
@@ -196,3 +197,54 @@ async def signaling_websocket(websocket: WebSocket) -> None:
                         other_peer,
                         RoomExpiredMessage(),
                     )
+
+
+def main() -> None:
+    """Run signaling server standalone via uvicorn."""
+    import uvicorn
+
+    parser = argparse.ArgumentParser(
+        prog="pied-piper-signaling",
+        description="Pied Piper WebSocket Signaling Server",
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default=settings.signaling_host,
+        help=f"Host to bind signaling server to (default: {settings.signaling_host})",
+    )
+    parser.add_argument(
+        "--port",
+        "-p",
+        type=int,
+        default=settings.signaling_port,
+        help=f"Port to bind signaling server to (default: {settings.signaling_port})",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=settings.log_level.lower(),
+        help="Logging level (default: info)",
+    )
+    args = parser.parse_args()
+
+    print("\n" + "=" * 60)
+    print("       Pied Piper — WebSocket Signaling Service")
+    print("=" * 60)
+    print(f"  Binding Host:     {args.host}")
+    print(f"  Binding Port:     {args.port}")
+    print(f"  WebSocket URL:    ws://{args.host}:{args.port}/ws")
+    print(f"  Health Endpoint:  http://{args.host}:{args.port}/health")
+    print(f"  Room TTL:         {settings.room_ttl_seconds}s")
+    print("=" * 60 + "\n")
+
+    uvicorn.run(
+        "backend.signaling.server:app",
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level,
+    )
+
+
+if __name__ == "__main__":
+    main()
