@@ -1,0 +1,408 @@
+/* Pied Piper — Dark Theme Stylesheet */
+
+/* === Base === */
+
+QMainWindow, QDialog {
+    background-color: #1a1a2e;
+    color: #e0e0e0;
+}
+
+QWidget#centralWidget {
+    background-color: #1a1a2e;
+}
+
+QWidget#viewStack {
+    background-color: #1a1a2e;
+}
+
+QWidget#homeView,
+QWidget#sendView,
+QWidget#receiveView,
+QWidget#transferCodeView,
+QWidget#confirmationView,
+QWidget#transferView,
+QWidget#completeView,
+QWidget#interruptedView,
+QWidget#errorView {
+    background-color: #1a1a2e;
+}
+
+/* === Typography === */
+
+QLabel {
+    color: #e0e0e0;
+    font-family: "Segoe UI", sans-serif;
+    font-size: 14px;
+}
+
+QLabel#appTitle {
+    font-size: 20px;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+QLabel#appSubtitle {
+    font-size: 12px;
+    color: #8888aa;
+    font-weight: 400;
+}
+
+QLabel#homePrompt {
+    font-size: 18px;
+    color: #ccccdd;
+    font-weight: 400;
+}
+
+QLabel#viewTitle {
+    font-size: 22px;
+    font-weight: 600;
+    color: #ffffff;
+}
+
+QLabel#viewSubtitle {
+    font-size: 15px;
+    color: #9999bb;
+    line-height: 1.5;
+}
+
+QLabel#fileName {
+    font-size: 16px;
+    font-weight: 500;
+    color: #e0e0e0;
+}
+
+QLabel#fileSize {
+    font-size: 14px;
+    color: #8888aa;
+}
+
+QLabel#transferCode {
+    color: #4fc3f7;
+    background-color: #16213e;
+    border: 1px solid #2a2a4a;
+    border-radius: 10px;
+    padding: 16px 32px;
+}
+
+QLabel#waitingLabel {
+    font-size: 14px;
+    color: #8888aa;
+}
+
+QLabel#transferStats {
+    font-size: 15px;
+    color: #ccccdd;
+}
+
+QLabel#transferSpeed,
+QLabel#transferEta {
+    font-size: 13px;
+    color: #8888aa;
+}
+
+QLabel#connectionStatus {
+    font-size: 13px;
+    color: #4fc3f7;
+}
+
+QLabel#infoText {
+    font-size: 14px;
+    color: #9999bb;
+}
+
+QLabel#settingsTitle {
+    font-size: 20px;
+    font-weight: 600;
+    color: #ffffff;
+}
+
+QLabel#sectionLabel {
+    font-size: 13px;
+    font-weight: 600;
+    color: #4fc3f7;
+    text-transform: uppercase;
+}
+
+QLabel#settingLabel {
+    font-size: 13px;
+    color: #ccccdd;
+}
+
+QLabel#settingValue {
+    font-size: 12px;
+    color: #8888aa;
+}
+
+QLabel#statusText {
+    font-size: 12px;
+    color: #8888aa;
+}
+
+/* Success / Warning / Error icons & labels */
+
+QLabel#successIcon {
+    font-size: 48px;
+    color: #66bb6a;
+}
+
+QLabel#errorIcon {
+    font-size: 48px;
+    color: #ef5350;
+}
+
+QLabel#errorTitle {
+    font-size: 20px;
+    font-weight: 600;
+    color: #ef5350;
+}
+
+QLabel#errorMessage {
+    font-size: 14px;
+    color: #9999bb;
+}
+
+QLabel#warningTitle {
+    font-size: 22px;
+    font-weight: 600;
+    color: #ffa726;
+}
+
+QLabel#integrityLabel[status="success"] {
+    color: #66bb6a;
+    font-size: 14px;
+}
+
+QLabel#integrityLabel[status="warning"] {
+    color: #ffa726;
+    font-size: 14px;
+}
+
+QLabel#integrityLabel[status="neutral"] {
+    color: #8888aa;
+    font-size: 14px;
+}
+
+QLabel#largeIcon {
+    font-size: 36px;
+}
+
+QLabel#dropIcon {
+    font-size: 36px;
+    color: #8888aa;
+}
+
+QLabel#dropText {
+    font-size: 15px;
+    color: #9999bb;
+}
+
+QLabel#dropOr {
+    font-size: 12px;
+    color: #666680;
+}
+
+/* === Header === */
+
+QWidget#headerBar {
+    background-color: #16213e;
+    border-bottom: 1px solid #2a2a4a;
+}
+
+/* === Status Bar === */
+
+QWidget#statusBar {
+    background-color: #16213e;
+    border-top: 1px solid #2a2a4a;
+}
+
+/* === Buttons === */
+
+QPushButton {
+    font-family: "Segoe UI", sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 28px;
+}
+
+QPushButton#primaryButton {
+    background-color: #4fc3f7;
+    color: #0d1b2a;
+}
+
+QPushButton#primaryButton:hover {
+    background-color: #81d4fa;
+}
+
+QPushButton#primaryButton:pressed {
+    background-color: #29b6f6;
+}
+
+QPushButton#primaryButton:disabled {
+    background-color: #2a2a4a;
+    color: #666680;
+}
+
+QPushButton#secondaryButton {
+    background-color: transparent;
+    color: #4fc3f7;
+    border: 1px solid #4fc3f7;
+}
+
+QPushButton#secondaryButton:hover {
+    background-color: rgba(79, 195, 247, 0.1);
+}
+
+QPushButton#dangerButton {
+    background-color: transparent;
+    color: #ef5350;
+    border: 1px solid #ef5350;
+}
+
+QPushButton#dangerButton:hover {
+    background-color: rgba(239, 83, 80, 0.1);
+}
+
+QPushButton#backButton {
+    background-color: transparent;
+    color: #8888aa;
+    border: none;
+    padding: 6px 12px;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+QPushButton#backButton:hover {
+    color: #e0e0e0;
+}
+
+QPushButton#settingsButton {
+    background-color: transparent;
+    color: #8888aa;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    font-size: 18px;
+    padding: 0px;
+}
+
+QPushButton#settingsButton:hover {
+    background-color: #1a2744;
+    color: #e0e0e0;
+}
+
+/* === Action Cards === */
+
+QFrame#actionCard {
+    background-color: #16213e;
+    border: 1px solid #2a2a4a;
+    border-radius: 12px;
+}
+
+QFrame#actionCard[hovered="true"] {
+    background-color: #1a2744;
+    border-color: #4fc3f7;
+}
+
+QLabel#cardIcon {
+    font-size: 36px;
+    color: #4fc3f7;
+}
+
+QLabel#cardTitle {
+    font-size: 17px;
+    font-weight: 600;
+    color: #ffffff;
+}
+
+QLabel#cardDesc {
+    font-size: 12px;
+    color: #8888aa;
+}
+
+/* === File Drop Zone === */
+
+QFrame#fileDropZone {
+    background-color: #16213e;
+    border: 2px dashed #2a2a4a;
+    border-radius: 12px;
+    min-width: 400px;
+    max-width: 500px;
+}
+
+QFrame#fileDropZone[dragOver="true"] {
+    border-color: #4fc3f7;
+    background-color: rgba(79, 195, 247, 0.05);
+}
+
+/* === Code Input === */
+
+QLineEdit#codeInput {
+    background-color: #16213e;
+    color: #e0e0e0;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 18px;
+    selection-background-color: #4fc3f7;
+    selection-color: #0d1b2a;
+}
+
+QLineEdit#codeInput:focus {
+    border-color: #4fc3f7;
+}
+
+/* === Checkbox === */
+
+QCheckBox#settingCheckbox {
+    color: #ccccdd;
+    font-size: 13px;
+    spacing: 8px;
+}
+
+QCheckBox#settingCheckbox::indicator {
+    width: 18px;
+    height: 18px;
+    border: 1px solid #2a2a4a;
+    border-radius: 4px;
+    background-color: #16213e;
+}
+
+QCheckBox#settingCheckbox::indicator:checked {
+    background-color: #4fc3f7;
+    border-color: #4fc3f7;
+}
+
+/* === Separator === */
+
+QFrame#separator {
+    background-color: #2a2a4a;
+    border: none;
+}
+
+/* === Scrollbar (if needed) === */
+
+QScrollBar:vertical {
+    background: #1a1a2e;
+    width: 8px;
+}
+
+QScrollBar::handle:vertical {
+    background: #2a2a4a;
+    border-radius: 4px;
+    min-height: 20px;
+}
+
+/* === Settings Dialog === */
+
+QDialog#settingsDialog {
+    background-color: #1a1a2e;
+    border: 1px solid #2a2a4a;
+}
+
+/* === Error label === */
+
+QLabel#errorLabel {
+    color: #ef5350;
+    font-size: 12px;
+}
