@@ -1,6 +1,6 @@
 """
-Unit tests for Desktop Step 3: TransferState models, TransferController, and MainWindow integration.
-Compatible with standard library unittest and pytest.
+Unit tests for Desktop Step 3 & 4:
+TransferState models, TransferController, MainWindow navigation shell, and menu actions.
 """
 
 import sys
@@ -24,8 +24,8 @@ from app.ui.main_window import MainWindow
 from app.ui.style import apply_win95_theme
 
 
-class TestDesktopStep3(unittest.TestCase):
-    """Test suite for desktop transfer state, controller skeleton, and UI wiring."""
+class TestDesktopStep3And4(unittest.TestCase):
+    """Test suite for desktop transfer state, controller, and MainWindow navigation."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -164,13 +164,57 @@ class TestDesktopStep3(unittest.TestCase):
         self.assertIsNone(controller.error_message)
         self.assertEqual(len(resets), 1)
 
-    def test_main_window_with_controller(self) -> None:
-        """Verify MainWindow integrates with TransferController without layout disruption."""
+    def test_main_window_navigation_and_views(self) -> None:
+        """Verify MainWindow view stack navigation and back actions."""
         controller = TransferController()
         window = MainWindow(controller=controller)
+
+        # Initial view is Home
         self.assertIs(window.controller, controller)
-        self.assertEqual(window.windowTitle(), "Pied Piper")
+        self.assertEqual(window._stack.currentIndex(), MainWindow.VIEW_HOME)
         self.assertEqual(window._status_label.text(), "Ready")
+
+        # Navigate to Send View
+        window.navigate_to_send()
+        self.assertEqual(window._stack.currentIndex(), MainWindow.VIEW_SEND)
+
+        # Navigate Back to Home
+        window.navigate_to_home()
+        self.assertEqual(window._stack.currentIndex(), MainWindow.VIEW_HOME)
+
+        # Navigate to Receive View
+        window.navigate_to_receive()
+        self.assertEqual(window._stack.currentIndex(), MainWindow.VIEW_RECEIVE)
+
+        # Navigate Back to Home
+        window.navigate_to_home()
+        self.assertEqual(window._stack.currentIndex(), MainWindow.VIEW_HOME)
+
+        window.close()
+
+    def test_menu_bar_structure_and_shortcuts(self) -> None:
+        """Verify menu bar actions trigger correct navigation."""
+        window = MainWindow()
+        menu_bar = window.menuBar()
+
+        # Verify menus exist
+        menu_texts = [m.text() for m in menu_bar.actions()]
+        self.assertIn("&File", menu_texts)
+        self.assertIn("&Transfer", menu_texts)
+        self.assertIn("&Help", menu_texts)
+
+        # Test Transfer -> Send File
+        window.navigate_to_send()
+        self.assertEqual(window._stack.currentIndex(), MainWindow.VIEW_SEND)
+
+        # Test File -> Home
+        window.navigate_to_home()
+        self.assertEqual(window._stack.currentIndex(), MainWindow.VIEW_HOME)
+
+        # Test Transfer -> Receive File
+        window.navigate_to_receive()
+        self.assertEqual(window._stack.currentIndex(), MainWindow.VIEW_RECEIVE)
+
         window.close()
 
 
