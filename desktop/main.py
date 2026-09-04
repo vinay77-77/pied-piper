@@ -8,10 +8,12 @@ if str(desktop_dir) not in sys.path:
 
 from PySide6.QtWidgets import QApplication
 from app.ui.main_window import MainWindow
+from app.ui.style import apply_win95_theme
 
 
 def main() -> int:
     app = QApplication(sys.argv)
+    apply_win95_theme(app)
     window = MainWindow()
     window.show()
     return app.exec()
