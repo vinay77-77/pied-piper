@@ -53,3 +53,26 @@ class TransferSessionInfo:
     file_info: Optional[FileInfo] = None
     progress: Optional[TransferProgress] = None
     error_message: Optional[str] = None
+
+
+def format_file_size(size_bytes: int) -> str:
+    """
+    Format an integer byte count into a standard human-readable string.
+    Examples: 0 B, 512 B, 1.2 KB, 4.7 MB, 1.8 GB
+    """
+    if size_bytes < 0:
+        return "0 B"
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    size = float(size_bytes)
+    unit_index = 0
+    while size >= 1024.0 and unit_index < len(units) - 1:
+        size /= 1024.0
+        unit_index += 1
+
+    formatted = f"{size:.1f}"
+    if formatted.endswith(".0"):
+        formatted = formatted[:-2]
+    return f"{formatted} {units[unit_index]}"

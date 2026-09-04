@@ -7,6 +7,7 @@ from app.models.transfer_state import (
     TransferProgress,
     TransferSessionInfo,
     TransferState,
+    format_file_size,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "TransferProgress",
     "TransferSessionInfo",
     "TransferState",
+    "format_file_size",
 ]

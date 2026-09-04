@@ -1,9 +1,11 @@
 """
-Unit tests for Desktop Step 3 & 4:
-TransferState models, TransferController, MainWindow navigation shell, and menu actions.
+Unit tests for Desktop Steps 3, 4 & 5:
+TransferState models, TransferController, MainWindow navigation shell, and Send File selection workflow.
 """
 
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,14 +20,15 @@ from app.models.transfer_state import (
     TransferProgress,
     TransferSessionInfo,
     TransferState,
+    format_file_size,
 )
 from app.controllers.transfer_controller import TransferController
 from app.ui.main_window import MainWindow
 from app.ui.style import apply_win95_theme
 
 
-class TestDesktopStep3And4(unittest.TestCase):
-    """Test suite for desktop transfer state, controller, and MainWindow navigation."""
+class TestDesktopStep345(unittest.TestCase):
+    """Test suite for transfer state, controller, MainWindow navigation, and file selection."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -52,6 +55,16 @@ class TestDesktopStep3And4(unittest.TestCase):
         }
         actual_states = {state.value for state in TransferState}
         self.assertEqual(expected_states, actual_states)
+
+    def test_format_file_size(self) -> None:
+        """Verify human-readable file size conversion."""
+        self.assertEqual(format_file_size(0), "0 B")
+        self.assertEqual(format_file_size(512), "512 B")
+        self.assertEqual(format_file_size(1024), "1 KB")
+        self.assertEqual(format_file_size(1228), "1.2 KB")
+        self.assertEqual(format_file_size(4928307), "4.7 MB")
+        self.assertEqual(format_file_size(1932735283), "1.8 GB")
+        self.assertEqual(format_file_size(-10), "0 B")
 
     def test_models_instantiation(self) -> None:
         """Verify dataclass instantiation and default values."""
@@ -189,6 +202,59 @@ class TestDesktopStep3And4(unittest.TestCase):
         # Navigate Back to Home
         window.navigate_to_home()
         self.assertEqual(window._stack.currentIndex(), MainWindow.VIEW_HOME)
+
+        window.close()
+
+    def test_send_view_file_selection_and_clear(self) -> None:
+        """Verify Send View metadata display, selection, and clear actions with a real temp file."""
+        controller = TransferController()
+        window = MainWindow(controller=controller)
+        window.navigate_to_send()
+
+        # Initial Send View state
+        self.assertEqual(window._file_name_label.text(), "No file selected")
+        self.assertEqual(window._file_size_label.text(), "—")
+        self.assertFalse(window._clear_btn.isEnabled())
+        self.assertEqual(controller.state, TransferState.IDLE)
+
+        # Create a real temporary file with known size
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp.write(b"A" * 4096)
+            tmp_path = tmp.name
+
+        try:
+            expected_name = os.path.basename(tmp_path)
+            expected_size = 4096
+
+            # Controller selects file
+            controller.select_file(file_path=tmp_path, file_size=expected_size)
+
+            # Check controller state
+            self.assertEqual(controller.state, TransferState.FILE_SELECTED)
+            self.assertIsNotNone(controller.file_info)
+            self.assertEqual(controller.file_info.file_name, expected_name)
+            self.assertEqual(controller.file_info.file_size, 4096)
+
+            # Check UI labels
+            self.assertEqual(window._file_name_label.text(), expected_name)
+            self.assertEqual(window._file_size_label.text(), "4 KB")
+            self.assertTrue(window._clear_btn.isEnabled())
+            self.assertEqual(window._status_label.text(), "File Selected")
+
+            # Click Clear
+            window._clear_btn.click()
+
+            # Check reset state
+            self.assertEqual(controller.state, TransferState.IDLE)
+            self.assertIsNone(controller.file_info)
+            self.assertEqual(window._file_name_label.text(), "No file selected")
+            self.assertEqual(window._file_size_label.text(), "—")
+            self.assertFalse(window._clear_btn.isEnabled())
+            self.assertEqual(window._status_label.text(), "Ready")
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
         window.close()
 
