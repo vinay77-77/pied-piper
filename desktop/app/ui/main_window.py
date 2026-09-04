@@ -1,8 +1,9 @@
 """
 Main application window for Pied Piper Desktop.
-Demonstrates the Windows 95 theme and bevel panel foundation.
+Demonstrates the Windows 95 theme, bevel panel foundation, and TransferController integration.
 """
 
+from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -13,19 +14,33 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from app.controllers.transfer_controller import TransferController
+from app.models.transfer_state import TransferState
 from app.ui.widgets.bevel_panel import BevelPanel, BevelStyle
 
 
 class MainWindow(QMainWindow):
-    """Main application window showcasing the Windows 95 visual foundation."""
+    """Main application window showcasing the Windows 95 visual foundation and controller."""
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        controller: Optional[TransferController] = None,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._controller = controller or TransferController(self)
+
         self.setWindowTitle("Pied Piper")
         self.resize(480, 320)
         self.setMinimumSize(400, 260)
 
         self._setup_ui()
+        self._bind_controller()
+
+    @property
+    def controller(self) -> TransferController:
+        """Return the transfer controller instance."""
+        return self._controller
 
     def _setup_ui(self) -> None:
         central_widget = QWidget(self)
@@ -80,6 +95,22 @@ class MainWindow(QMainWindow):
         # 4. Classic Status Bar
         status_bar = QStatusBar(self)
         status_bar.setSizeGripEnabled(True)
-        status_label = QLabel("Ready")
-        status_bar.addWidget(status_label, 1)
+        self._status_label = QLabel("Ready")
+        status_bar.addWidget(self._status_label, 1)
         self.setStatusBar(status_bar)
+
+    def _bind_controller(self) -> None:
+        """Bind controller signals to window UI elements."""
+        self._controller.state_changed.connect(self._on_state_changed)
+        self._update_status_display(self._controller.state)
+
+    def _on_state_changed(self, state: TransferState) -> None:
+        """Handle controller state updates."""
+        self._update_status_display(state)
+
+    def _update_status_display(self, state: TransferState) -> None:
+        """Update status bar label according to state."""
+        if state == TransferState.IDLE:
+            self._status_label.setText("Ready")
+        else:
+            self._status_label.setText(state.value)
