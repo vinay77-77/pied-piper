@@ -6,7 +6,7 @@ underlying transfer engine / signaling backend client.
 """
 
 import os
-from typing import Optional, Set, Dict
+from typing import Optional, Set, Dict, Tuple
 from PySide6.QtCore import QObject, Signal
 
 from app.models.transfer_state import (
@@ -14,6 +14,7 @@ from app.models.transfer_state import (
     TransferProgress,
     TransferSessionInfo,
     TransferState,
+    validate_transfer_code,
 )
 
 
@@ -29,6 +30,7 @@ class TransferController(QObject):
     progress_updated = Signal(object)   # Emits TransferProgress
     error_occurred = Signal(str)        # Emits error message
     session_reset = Signal()            # Emits on session reset
+    code_validated = Signal(str)        # Emits validated transfer code
 
     # Explicit allowed state transitions
     _VALID_TRANSITIONS: Dict[TransferState, Set[TransferState]] = {
@@ -132,6 +134,11 @@ class TransferController(QObject):
         return self._session_info
 
     @property
+    def session_code(self) -> Optional[str]:
+        """Current session / transfer code, if any."""
+        return self._session_info.session_code
+
+    @property
     def file_info(self) -> Optional[FileInfo]:
         """Selected file metadata, if any."""
         return self._session_info.file_info
@@ -202,6 +209,26 @@ class TransferController(QObject):
         self._session_info.session_code = session_code
         if role is not None:
             self._session_info.role = role
+
+    def set_receiver_code(self, code: str) -> Tuple[bool, str]:
+        """
+        Locally validate and store the entered receiver transfer code.
+        Does not transition to network states (e.g. RECEIVER_CONNECTED).
+        Returns (is_valid, normalized_code_or_error_message).
+        """
+        is_valid, result = validate_transfer_code(code)
+        if not is_valid:
+            return False, result
+
+        self._session_info.session_code = result
+        self._session_info.role = "receiver"
+        self.code_validated.emit(result)
+        return True, result
+
+    def clear_session_code(self) -> None:
+        """Clear the registered session/transfer code and receiver role."""
+        self._session_info.session_code = None
+        self._session_info.role = None
 
     def update_progress(
         self,

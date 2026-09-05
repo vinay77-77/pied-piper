@@ -1,7 +1,7 @@
 """
 Main application window for Pied Piper Desktop.
 Serves as the application shell providing navigation between Home, Send, and Receive views,
-and manages the local file-selection workflow for sending files.
+and manages the local file-selection and receiver code entry workflows.
 """
 
 import os
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -29,7 +30,7 @@ from app.ui.widgets.bevel_panel import BevelPanel, BevelStyle
 class MainWindow(QMainWindow):
     """
     Main application shell for Pied Piper.
-    Manages top-level menus, status bar, central view stack, and file selection.
+    Manages top-level menus, status bar, central view stack, and transfer workflows.
     """
 
     # View Stack Indices
@@ -267,13 +268,13 @@ class MainWindow(QMainWindow):
         return panel
 
     def _create_receive_view(self) -> QWidget:
-        """Create the Receive File placeholder view."""
+        """Create the functional Receive File code entry view."""
         panel = BevelPanel(bevel_style=BevelStyle.SUNKEN, parent=self)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
-        # Back Navigation Row
+        # 1. Back Navigation Row
         nav_row = QHBoxLayout()
         back_btn = QPushButton("← Back")
         back_btn.setFixedWidth(75)
@@ -288,22 +289,67 @@ class MainWindow(QMainWindow):
         nav_row.addStretch()
         layout.addLayout(nav_row)
 
-        # Placeholder Body
+        # 2. Code Entry Section in Inner Raised Panel
         body_panel = BevelPanel(bevel_style=BevelStyle.RAISED, parent=panel)
         body_layout = QVBoxLayout(body_panel)
         body_layout.setContentsMargins(12, 12, 12, 12)
-        body_layout.setSpacing(6)
+        body_layout.setSpacing(10)
 
-        desc = QLabel("Transfer-code entry and reception workflow will be implemented in Step 6.")
-        body_layout.addWidget(desc)
+        prompt_label = QLabel("Enter the 6-character transfer code provided by the sender:")
+        body_layout.addWidget(prompt_label)
+
+        # Input Row
+        input_row = QHBoxLayout()
+        input_row.setSpacing(8)
+
+        self._code_input = QLineEdit()
+        self._code_input.setPlaceholderText("e.g. 4AF8B2")
+        self._code_input.setMaxLength(6)
+        self._code_input.setMinimumWidth(120)
+        self._code_input.returnPressed.connect(self._on_submit_receive_code)
+        input_row.addWidget(self._code_input)
+
+        self._continue_code_btn = QPushButton("Continue")
+        self._continue_code_btn.setFixedWidth(75)
+        self._continue_code_btn.clicked.connect(self._on_submit_receive_code)
+        input_row.addWidget(self._continue_code_btn)
+
+        self._clear_code_btn = QPushButton("Clear")
+        self._clear_code_btn.setFixedWidth(75)
+        self._clear_code_btn.clicked.connect(self._on_clear_receive_code)
+        input_row.addWidget(self._clear_code_btn)
+
+        input_row.addStretch()
+        body_layout.addLayout(input_row)
+
+        # Status Grid
+        status_grid = QGridLayout()
+        status_grid.setContentsMargins(4, 4, 4, 4)
+        status_grid.setHorizontalSpacing(10)
+
+        status_heading = QLabel("Status:")
+        status_heading.setStyleSheet("font-weight: bold;")
+        self._receive_status_label = QLabel("Waiting for transfer code")
+        self._receive_status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        status_grid.addWidget(status_heading, 0, 0, Qt.AlignmentFlag.AlignTop)
+        status_grid.addWidget(self._receive_status_label, 0, 1)
+        status_grid.setColumnStretch(1, 1)
+        body_layout.addLayout(status_grid)
+
+        # Helper / Specification Note
+        note_label = QLabel(
+            "• Transfer codes consist of 6 alphanumeric characters (excluding ambiguous 0, O, 1, I, L).\n"
+            "• Code is validated locally; backend session lookup will be active in future steps."
+        )
+        note_label.setStyleSheet("color: #404040; font-size: 8pt;")
+        body_layout.addWidget(note_label)
+
         body_layout.addStretch()
-
         layout.addWidget(body_panel, 1)
         return panel
 
     def _on_browse_file(self) -> None:
         """Open native file dialog to select a real local file."""
-        # Record selecting state
         self._controller.set_state(TransferState.SELECTING_FILE)
 
         file_path, _ = QFileDialog.getOpenFileName(
@@ -313,7 +359,6 @@ class MainWindow(QMainWindow):
             "All Files (*.*)",
         )
 
-        # User cancelled dialog
         if not file_path:
             if self._controller.file_info is not None:
                 self._controller.set_state(TransferState.FILE_SELECTED)
@@ -321,7 +366,6 @@ class MainWindow(QMainWindow):
                 self._controller.set_state(TransferState.IDLE)
             return
 
-        # Validate path exists and is regular file
         if not os.path.isfile(file_path):
             QMessageBox.warning(
                 self,
@@ -348,12 +392,37 @@ class MainWindow(QMainWindow):
                 self._controller.set_state(TransferState.IDLE)
             return
 
-        # Pass real file metadata to controller
         self._controller.select_file(file_path=file_path, file_size=file_size)
 
     def _on_clear_file(self) -> None:
         """Clear currently selected file from controller and reset display."""
         self._controller.clear_file()
+
+    def _on_submit_receive_code(self) -> None:
+        """Validate entered transfer code locally and register with controller."""
+        raw_code = self._code_input.text()
+        is_valid, msg = self._controller.set_receiver_code(raw_code)
+
+        if not is_valid:
+            QMessageBox.warning(
+                self,
+                "Invalid Transfer Code",
+                f"{msg}\n\nPlease check the code provided by the sender.",
+            )
+            self._receive_status_label.setText("Invalid transfer code format")
+            self._code_input.setFocus()
+            return
+
+        # Code is valid format: update input with normalized string
+        self._code_input.setText(msg)
+        self._receive_status_label.setText(f"Code accepted: {msg} — Ready for backend lookup")
+
+    def _on_clear_receive_code(self) -> None:
+        """Clear the entered transfer code and reset receiver status."""
+        self._code_input.clear()
+        self._controller.clear_session_code()
+        self._receive_status_label.setText("Waiting for transfer code")
+        self._code_input.setFocus()
 
     def navigate_to_home(self) -> None:
         """Switch central view to Home."""

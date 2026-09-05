@@ -1,11 +1,15 @@
 """
 Transfer state models and data definitions for Pied Piper Desktop.
-Defines the lifecycle states and transfer metadata structures.
+Defines the lifecycle states, transfer metadata structures, and code validation.
 """
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Optional, Tuple
+
+# Transfer rendezvous room code specification (matching signaling specification)
+TRANSFER_CODE_LENGTH = 6
+TRANSFER_CODE_CHARS = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 
 
 class TransferState(Enum):
@@ -76,3 +80,27 @@ def format_file_size(size_bytes: int) -> str:
     if formatted.endswith(".0"):
         formatted = formatted[:-2]
     return f"{formatted} {units[unit_index]}"
+
+
+def validate_transfer_code(code: str) -> Tuple[bool, str]:
+    """
+    Locally validate a transfer code format against the documented 6-character specification.
+    Returns (is_valid, normalized_code_or_error_message).
+    """
+    if not code or not code.strip():
+        return False, "Transfer code cannot be empty."
+
+    normalized = code.strip().upper()
+    if len(normalized) != TRANSFER_CODE_LENGTH:
+        return False, f"Transfer code must be exactly {TRANSFER_CODE_LENGTH} characters."
+
+    invalid_chars = [c for c in normalized if c not in TRANSFER_CODE_CHARS]
+    if invalid_chars:
+        unique_invalid = sorted(list(set(invalid_chars)))
+        return (
+            False,
+            f"Transfer code contains invalid characters: {', '.join(unique_invalid)}. "
+            f"Ambiguous characters (0, O, 1, I, L) are not used.",
+        )
+
+    return True, normalized
