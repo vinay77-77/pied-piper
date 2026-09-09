@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     turn_credential: str = Field(default="", description="TURN server credential")
 
     # Transfer protocol parameters
-    chunk_size_bytes: int = Field(default=16384, description="Default chunk size in bytes (16 KB)")
+    chunk_size_bytes: int = Field(default=32768, description="Default chunk size in bytes (32 KB)")
     sliding_window_size: int = Field(default=32, description="Sliding window size for flow control")
     sqlite_path: Path = Field(default=Path("./pied_piper.db"), description="Path to local SQLite database")
 
