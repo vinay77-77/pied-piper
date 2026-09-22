@@ -176,18 +176,23 @@ QGroupBox::title {{
 
 /* Progress Bar */
 QProgressBar {{
-    background-color: {COLOR_BG};
+    background-color: {COLOR_FIELD_BG};
     border-top: 2px solid {COLOR_SHADOW};
     border-left: 2px solid {COLOR_SHADOW};
     border-right: 1px solid {COLOR_LIGHT};
     border-bottom: 1px solid {COLOR_LIGHT};
     text-align: center;
     color: {COLOR_TEXT};
+    min-height: 16px;
+    max-height: 20px;
 }}
 
 QProgressBar::chunk {{
     background-color: {COLOR_NAVY};
+    width: 8px;
+    margin: 1px;
 }}
+
 
 /* Status Bar */
 QStatusBar {{

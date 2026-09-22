@@ -5,7 +5,7 @@ Defines the lifecycle states, transfer metadata structures, and code validation.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 # Transfer rendezvous room code specification (matching signaling specification)
 TRANSFER_CODE_LENGTH = 6
@@ -30,6 +30,29 @@ class TransferState(Enum):
     CANCELLED = "CANCELLED"
 
 
+TRANSFER_STATE_LABELS: Dict[TransferState, str] = {
+    TransferState.IDLE: "Ready",
+    TransferState.SELECTING_FILE: "Selecting file...",
+    TransferState.FILE_SELECTED: "File selected",
+    TransferState.CREATING_SESSION: "Creating session...",
+    TransferState.WAITING_FOR_RECEIVER: "Waiting for receiver...",
+    TransferState.RECEIVER_CONNECTED: "Receiver connected",
+    TransferState.AWAITING_ACCEPTANCE: "Waiting for acceptance...",
+    TransferState.CONNECTING: "Connecting...",
+    TransferState.TRANSFERRING: "Transferring...",
+    TransferState.INTERRUPTED: "Transfer interrupted",
+    TransferState.RESUMING: "Resuming...",
+    TransferState.COMPLETED: "Completed",
+    TransferState.FAILED: "Transfer failed",
+    TransferState.CANCELLED: "Cancelled",
+}
+
+
+def format_transfer_state(state: TransferState) -> str:
+    """Map TransferState enum values to concise user-facing status labels."""
+    return TRANSFER_STATE_LABELS.get(state, state.value)
+
+
 @dataclass
 class FileInfo:
     """Metadata representing a selected file for transfer."""
@@ -46,6 +69,7 @@ class TransferProgress:
     total_bytes: int = 0
     speed_bps: float = 0.0
     percentage: float = 0.0
+    eta_seconds: Optional[float] = None
 
 
 @dataclass
@@ -57,6 +81,8 @@ class TransferSessionInfo:
     file_info: Optional[FileInfo] = None
     progress: Optional[TransferProgress] = None
     error_message: Optional[str] = None
+    connection_type: Optional[str] = None  # None | "P2P" | "Relay" | "Connecting" | "Disconnected"
+    integrity_verified: Optional[bool] = None  # None | True | False
 
 
 def format_file_size(size_bytes: int) -> str:
@@ -82,25 +108,63 @@ def format_file_size(size_bytes: int) -> str:
     return f"{formatted} {units[unit_index]}"
 
 
+def format_speed(speed_bps: float) -> str:
+    """
+    Format transfer speed (bytes per second) into a standard human-readable string.
+    Examples: —, 512 B/s, 512 KB/s, 2.4 MB/s
+    """
+    if speed_bps <= 0.0:
+        return "—"
+    if speed_bps < 1024.0:
+        return f"{int(speed_bps)} B/s"
+
+    units = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
+    speed = float(speed_bps)
+    unit_index = 0
+    while speed >= 1024.0 and unit_index < len(units) - 1:
+        speed /= 1024.0
+        unit_index += 1
+
+    formatted = f"{speed:.1f}"
+    if formatted.endswith(".0"):
+        formatted = formatted[:-2]
+    return f"{formatted} {units[unit_index]}"
+
+
+def format_eta(eta_seconds: Optional[float]) -> str:
+    """
+    Format estimated time remaining into HH:MM:SS or MM:SS format.
+    Examples: —, 00:05, 01:42:17
+    """
+    if eta_seconds is None or eta_seconds < 0:
+        return "—"
+
+    total_seconds = int(eta_seconds)
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
 def validate_transfer_code(code: str) -> Tuple[bool, str]:
     """
     Locally validate a transfer code format against the documented 6-character specification.
     Returns (is_valid, normalized_code_or_error_message).
     """
     if not code or not code.strip():
-        return False, "Transfer code cannot be empty."
+        return False, "Please enter the transfer code provided by the sender."
 
     normalized = code.strip().upper()
     if len(normalized) != TRANSFER_CODE_LENGTH:
-        return False, f"Transfer code must be exactly {TRANSFER_CODE_LENGTH} characters."
+        return False, "Invalid transfer code. Please check the code provided by the sender."
 
     invalid_chars = [c for c in normalized if c not in TRANSFER_CODE_CHARS]
     if invalid_chars:
-        unique_invalid = sorted(list(set(invalid_chars)))
-        return (
-            False,
-            f"Transfer code contains invalid characters: {', '.join(unique_invalid)}. "
-            f"Ambiguous characters (0, O, 1, I, L) are not used.",
-        )
+        return False, "Invalid transfer code. Please check the code provided by the sender."
 
     return True, normalized
+
+

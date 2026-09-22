@@ -23,8 +23,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from app.controllers.transfer_controller import TransferController
-from app.models.transfer_state import FileInfo, TransferState, format_file_size
+from app.models.transfer_state import (
+    FileInfo,
+    TransferState,
+    format_file_size,
+    format_transfer_state,
+)
 from app.ui.widgets.bevel_panel import BevelPanel, BevelStyle
+from app.ui.widgets.transfer_panel import TransferPanel
 
 
 class MainWindow(QMainWindow):
@@ -37,6 +43,7 @@ class MainWindow(QMainWindow):
     VIEW_HOME = 0
     VIEW_SEND = 1
     VIEW_RECEIVE = 2
+    VIEW_TRANSFER = 3
 
     def __init__(
         self,
@@ -58,6 +65,11 @@ class MainWindow(QMainWindow):
     def controller(self) -> TransferController:
         """Return the transfer controller instance."""
         return self._controller
+
+    @property
+    def transfer_panel(self) -> TransferPanel:
+        """Return the transfer status panel widget."""
+        return self._transfer_panel
 
     def _create_menus(self) -> None:
         """Initialize the classic Windows 95 menu bar."""
@@ -91,6 +103,13 @@ class MainWindow(QMainWindow):
         receive_action.triggered.connect(self.navigate_to_receive)
         transfer_menu.addAction(receive_action)
 
+        transfer_menu.addSeparator()
+
+        status_action = QAction("Transfer &Status", self)
+        status_action.setShortcut(QKeySequence("Ctrl+T"))
+        status_action.triggered.connect(self.navigate_to_transfer)
+        transfer_menu.addAction(status_action)
+
         # --- Help Menu ---
         help_menu = menu_bar.addMenu("&Help")
 
@@ -111,10 +130,13 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self._header_label)
 
         # 2. Central View Stack
+        self._transfer_panel = TransferPanel(controller=self._controller, parent=self)
+
         self._stack = QStackedWidget(self)
         self._stack.addWidget(self._create_home_view())
         self._stack.addWidget(self._create_send_view())
         self._stack.addWidget(self._create_receive_view())
+        self._stack.addWidget(self._create_transfer_view())
         root_layout.addWidget(self._stack, 1)
 
         self.setCentralWidget(central_widget)
@@ -125,6 +147,7 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("Ready")
         status_bar.addWidget(self._status_label, 1)
         self.setStatusBar(status_bar)
+
 
     def _create_home_view(self) -> QWidget:
         """Create the Home / Landing view."""
@@ -253,13 +276,20 @@ class MainWindow(QMainWindow):
         meta_grid.setColumnStretch(1, 1)
         body_layout.addLayout(meta_grid)
 
-        # Action Row (Clear Selection)
+        # Action Row (Clear Selection & Send File)
         action_row = QHBoxLayout()
         self._clear_btn = QPushButton("Clear")
         self._clear_btn.setFixedWidth(75)
         self._clear_btn.setEnabled(False)
         self._clear_btn.clicked.connect(self._on_clear_file)
         action_row.addWidget(self._clear_btn)
+
+        self._send_file_btn = QPushButton("Send File")
+        self._send_file_btn.setMinimumWidth(85)
+        self._send_file_btn.setEnabled(False)
+        self._send_file_btn.clicked.connect(self._on_start_send)
+        action_row.addWidget(self._send_file_btn)
+
         action_row.addStretch()
         body_layout.addLayout(action_row)
 
@@ -295,7 +325,7 @@ class MainWindow(QMainWindow):
         body_layout.setContentsMargins(12, 12, 12, 12)
         body_layout.setSpacing(10)
 
-        prompt_label = QLabel("Enter the 6-character transfer code provided by the sender:")
+        prompt_label = QLabel("Enter the transfer code provided by the sender:")
         body_layout.addWidget(prompt_label)
 
         # Input Row
@@ -336,17 +366,13 @@ class MainWindow(QMainWindow):
         status_grid.setColumnStretch(1, 1)
         body_layout.addLayout(status_grid)
 
-        # Helper / Specification Note
-        note_label = QLabel(
-            "• Transfer codes consist of 6 alphanumeric characters (excluding ambiguous 0, O, 1, I, L).\n"
-            "• Code is validated locally; backend session lookup will be active in future steps."
-        )
-        note_label.setStyleSheet("color: #404040; font-size: 8pt;")
-        body_layout.addWidget(note_label)
-
         body_layout.addStretch()
         layout.addWidget(body_panel, 1)
         return panel
+
+    def _create_transfer_view(self) -> QWidget:
+        """Create the Transfer Status view wrapping the existing TransferPanel."""
+        return self._transfer_panel
 
     def _on_browse_file(self) -> None:
         """Open native file dialog to select a real local file."""
@@ -398,8 +424,13 @@ class MainWindow(QMainWindow):
         """Clear currently selected file from controller and reset display."""
         self._controller.clear_file()
 
+    def _on_start_send(self) -> None:
+        """Start the real send transfer operation and switch view."""
+        if self._controller.start_send():
+            self.navigate_to_transfer()
+
     def _on_submit_receive_code(self) -> None:
-        """Validate entered transfer code locally and register with controller."""
+        """Validate entered transfer code locally and start real receive operation."""
         raw_code = self._code_input.text()
         is_valid, msg = self._controller.set_receiver_code(raw_code)
 
@@ -407,15 +438,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Invalid Transfer Code",
-                f"{msg}\n\nPlease check the code provided by the sender.",
+                msg,
             )
-            self._receive_status_label.setText("Invalid transfer code format")
+            self._receive_status_label.setText("Invalid transfer code")
             self._code_input.setFocus()
             return
 
         # Code is valid format: update input with normalized string
         self._code_input.setText(msg)
-        self._receive_status_label.setText(f"Code accepted: {msg} — Ready for backend lookup")
+        self._receive_status_label.setText("Code accepted.")
+        if self._controller.start_receive(msg):
+            self.navigate_to_transfer()
 
     def _on_clear_receive_code(self) -> None:
         """Clear the entered transfer code and reset receiver status."""
@@ -423,6 +456,7 @@ class MainWindow(QMainWindow):
         self._controller.clear_session_code()
         self._receive_status_label.setText("Waiting for transfer code")
         self._code_input.setFocus()
+
 
     def navigate_to_home(self) -> None:
         """Switch central view to Home."""
@@ -435,6 +469,10 @@ class MainWindow(QMainWindow):
     def navigate_to_receive(self) -> None:
         """Switch central view to Receive File."""
         self._stack.setCurrentIndex(self.VIEW_RECEIVE)
+
+    def navigate_to_transfer(self) -> None:
+        """Switch central view to Transfer Status."""
+        self._stack.setCurrentIndex(self.VIEW_TRANSFER)
 
     def _show_about_dialog(self) -> None:
         """Display native About dialog with accurate technical description."""
@@ -460,14 +498,24 @@ class MainWindow(QMainWindow):
         self._file_name_label.setText(info.file_name)
         self._file_size_label.setText(format_file_size(info.file_size))
         self._clear_btn.setEnabled(True)
+        self._send_file_btn.setEnabled(True)
 
     def _on_state_changed(self, state: TransferState) -> None:
         """Handle controller state updates."""
         self._update_status_display(state)
+        if state in (
+            TransferState.CREATING_SESSION,
+            TransferState.WAITING_FOR_RECEIVER,
+            TransferState.CONNECTING,
+            TransferState.TRANSFERRING,
+        ):
+            self.navigate_to_transfer()
+
         if state == TransferState.IDLE and self._controller.file_info is None:
             self._file_name_label.setText("No file selected")
             self._file_size_label.setText("—")
             self._clear_btn.setEnabled(False)
+            self._send_file_btn.setEnabled(False)
 
     def _update_status_display(self, state: TransferState) -> None:
         """Update status bar label according to state."""

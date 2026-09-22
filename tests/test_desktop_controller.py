@@ -355,10 +355,10 @@ class TestDesktopStep3456(unittest.TestCase):
 
         # Input should normalize and status update
         self.assertEqual(window._code_input.text(), "4AF8B2")
-        self.assertIn("Code accepted: 4AF8B2", window._receive_status_label.text())
+        self.assertEqual(window._receive_status_label.text(), "Code accepted.")
         self.assertEqual(controller.session_code, "4AF8B2")
-        # Must not have jumped to fake network state
-        self.assertEqual(controller.state, TransferState.IDLE)
+        # Submitting code initiates real receive and transitions to CONNECTING
+        self.assertEqual(controller.state, TransferState.CONNECTING)
 
         # Click Clear
         window._clear_code_btn.click()
@@ -390,33 +390,35 @@ class TestDesktopStep3456(unittest.TestCase):
         # 4. Empty input is rejected appropriately
         is_valid_empty, err_empty = validate_transfer_code("")
         self.assertFalse(is_valid_empty)
-        self.assertIn("cannot be empty", err_empty)
+        self.assertEqual(err_empty, "Please enter the transfer code provided by the sender.")
 
         is_valid_ws, err_ws = validate_transfer_code("   ")
         self.assertFalse(is_valid_ws)
-        self.assertIn("cannot be empty", err_ws)
+        self.assertEqual(err_ws, "Please enter the transfer code provided by the sender.")
 
         # 5. Clearly invalid input is rejected appropriately
+        expected_invalid_err = "Invalid transfer code. Please check the code provided by the sender."
+
         # Length too short
         is_valid_short, err_short = validate_transfer_code("234")
         self.assertFalse(is_valid_short)
-        self.assertIn("must be exactly 6 characters", err_short)
+        self.assertEqual(err_short, expected_invalid_err)
 
         # Length too long
         is_valid_long, err_long = validate_transfer_code("2345678")
         self.assertFalse(is_valid_long)
-        self.assertIn("must be exactly 6 characters", err_long)
+        self.assertEqual(err_long, expected_invalid_err)
 
         # Ambiguous characters: 0, O, 1, I, L
         for amb in ["234560", "23456O", "234561", "23456I", "23456L"]:
             is_valid_amb, err_amb = validate_transfer_code(amb)
             self.assertFalse(is_valid_amb)
-            self.assertIn("contains invalid characters", err_amb)
+            self.assertEqual(err_amb, expected_invalid_err)
 
         # Invalid symbols
         is_valid_sym, err_sym = validate_transfer_code("AB#$23")
         self.assertFalse(is_valid_sym)
-        self.assertIn("contains invalid characters", err_sym)
+        self.assertEqual(err_sym, expected_invalid_err)
 
         # 6. A correctly formatted code is accepted as valid local input
         is_valid_ok, norm_ok = validate_transfer_code("  4af8b2  ")
@@ -445,7 +447,7 @@ class TestDesktopStep3456(unittest.TestCase):
         # 10. Clear/reset removes the entered code
         window.navigate_to_receive()
         window._code_input.setText("4AF8B2")
-        window._receive_status_label.setText("Code accepted: 4AF8B2")
+        window._receive_status_label.setText("Code accepted.")
         window._clear_code_btn.click()
         self.assertEqual(window._code_input.text(), "")
         self.assertEqual(window._receive_status_label.text(), "Waiting for transfer code")
@@ -466,6 +468,7 @@ class TestDesktopStep3456(unittest.TestCase):
         # 15. No backend/network calls are made (verified: controller and UI are purely local)
 
         window.close()
+
 
     def test_menu_bar_structure_and_shortcuts(self) -> None:
         """Verify menu bar actions trigger correct navigation."""
