@@ -54,8 +54,8 @@ class MainWindow(QMainWindow):
         self._controller = controller or TransferController(self)
 
         self.setWindowTitle("Pied Piper")
-        self.resize(520, 360)
-        self.setMinimumSize(440, 280)
+        self.resize(540, 440)
+        self.setMinimumSize(460, 380)
 
         self._create_menus()
         self._setup_ui()

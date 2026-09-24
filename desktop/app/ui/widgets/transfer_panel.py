@@ -64,8 +64,8 @@ class TransferPanel(BevelPanel):
     def _setup_ui(self) -> None:
         """Construct the Windows 95 transfer panel layout and label controls."""
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(12, 12, 12, 12)
-        root_layout.setSpacing(10)
+        root_layout.setContentsMargins(10, 10, 10, 10)
+        root_layout.setSpacing(6)
 
         # 1. Section Title
         title_label = QLabel("Transfer Status")
@@ -77,12 +77,13 @@ class TransferPanel(BevelPanel):
         # 2. File Metadata & State Grid
         info_grid = QGridLayout()
         info_grid.setContentsMargins(0, 0, 0, 0)
-        info_grid.setHorizontalSpacing(12)
-        info_grid.setVerticalSpacing(6)
+        info_grid.setHorizontalSpacing(10)
+        info_grid.setVerticalSpacing(4)
 
         fn_lbl = QLabel("File:")
         fn_lbl.setStyleSheet("font-weight: bold;")
         self._filename_label = QLabel("No file selected")
+        self._filename_label.setWordWrap(True)
         self._filename_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         info_grid.addWidget(fn_lbl, 0, 0, Qt.AlignmentFlag.AlignTop)
         info_grid.addWidget(self._filename_label, 0, 1)
@@ -104,6 +105,7 @@ class TransferPanel(BevelPanel):
         st_lbl = QLabel("Status:")
         st_lbl.setStyleSheet("font-weight: bold;")
         self._status_label = QLabel("Ready")
+        self._status_label.setWordWrap(True)
         self._status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         info_grid.addWidget(st_lbl, 3, 0, Qt.AlignmentFlag.AlignTop)
         info_grid.addWidget(self._status_label, 3, 1)
@@ -121,37 +123,38 @@ class TransferPanel(BevelPanel):
         # 4. Metrics Grid (Progress details, Speed, ETA, Connection, Integrity)
         metrics_grid = QGridLayout()
         metrics_grid.setContentsMargins(0, 0, 0, 0)
-        metrics_grid.setHorizontalSpacing(12)
+        metrics_grid.setHorizontalSpacing(10)
         metrics_grid.setVerticalSpacing(4)
 
         prog_hdr = QLabel("Progress:")
         self._progress_label = QLabel("—")
+        self._progress_label.setWordWrap(True)
         self._progress_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        metrics_grid.addWidget(prog_hdr, 0, 0)
+        metrics_grid.addWidget(prog_hdr, 0, 0, Qt.AlignmentFlag.AlignTop)
         metrics_grid.addWidget(self._progress_label, 0, 1)
 
         spd_hdr = QLabel("Speed:")
         self._speed_label = QLabel("—")
         self._speed_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        metrics_grid.addWidget(spd_hdr, 1, 0)
+        metrics_grid.addWidget(spd_hdr, 1, 0, Qt.AlignmentFlag.AlignTop)
         metrics_grid.addWidget(self._speed_label, 1, 1)
 
         eta_hdr = QLabel("ETA:")
         self._eta_label = QLabel("—")
         self._eta_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        metrics_grid.addWidget(eta_hdr, 2, 0)
+        metrics_grid.addWidget(eta_hdr, 2, 0, Qt.AlignmentFlag.AlignTop)
         metrics_grid.addWidget(self._eta_label, 2, 1)
 
         conn_hdr = QLabel("Connection:")
         self._connection_label = QLabel("—")
         self._connection_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        metrics_grid.addWidget(conn_hdr, 3, 0)
+        metrics_grid.addWidget(conn_hdr, 3, 0, Qt.AlignmentFlag.AlignTop)
         metrics_grid.addWidget(self._connection_label, 3, 1)
 
         integ_hdr = QLabel("Integrity:")
         self._integrity_label = QLabel("—")
         self._integrity_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        metrics_grid.addWidget(integ_hdr, 4, 0)
+        metrics_grid.addWidget(integ_hdr, 4, 0, Qt.AlignmentFlag.AlignTop)
         metrics_grid.addWidget(self._integrity_label, 4, 1)
 
         metrics_grid.setColumnStretch(1, 1)
@@ -159,7 +162,7 @@ class TransferPanel(BevelPanel):
 
         # 5. Action Row (Cancel Button, initially disabled)
         btn_row = QHBoxLayout()
-        btn_row.setContentsMargins(0, 4, 0, 0)
+        btn_row.setContentsMargins(0, 2, 0, 0)
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.setFixedWidth(75)
         self._cancel_btn.setEnabled(False)
