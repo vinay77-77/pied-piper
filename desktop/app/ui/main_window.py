@@ -460,14 +460,17 @@ class MainWindow(QMainWindow):
 
     def navigate_to_home(self) -> None:
         """Switch central view to Home."""
+        self._controller.reset()
         self._stack.setCurrentIndex(self.VIEW_HOME)
 
     def navigate_to_send(self) -> None:
         """Switch central view to Send File."""
+        self._controller.reset()
         self._stack.setCurrentIndex(self.VIEW_SEND)
 
     def navigate_to_receive(self) -> None:
         """Switch central view to Receive File."""
+        self._controller.reset()
         self._stack.setCurrentIndex(self.VIEW_RECEIVE)
 
     def navigate_to_transfer(self) -> None:
@@ -491,7 +494,18 @@ class MainWindow(QMainWindow):
         """Bind controller signals to window UI elements."""
         self._controller.state_changed.connect(self._on_state_changed)
         self._controller.file_selected.connect(self._on_file_selected)
+        self._controller.session_reset.connect(self._on_session_reset)
+        self._transfer_panel.home_requested.connect(self.navigate_to_home)
         self._update_status_display(self._controller.state)
+
+    def _on_session_reset(self) -> None:
+        """Reset Send and Receive view input controls and labels on session reset."""
+        self._code_input.clear()
+        self._receive_status_label.setText("Waiting for transfer code")
+        self._file_name_label.setText("No file selected")
+        self._file_size_label.setText("—")
+        self._clear_btn.setEnabled(False)
+        self._send_file_btn.setEnabled(False)
 
     def _on_file_selected(self, info: FileInfo) -> None:
         """Update Send View UI when a file is selected."""

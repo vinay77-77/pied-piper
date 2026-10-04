@@ -5,11 +5,12 @@ and integrity verification strictly driven by controller signals without fake va
 """
 
 from typing import Optional
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -35,6 +36,8 @@ class TransferPanel(BevelPanel):
     Presents real-time transfer metrics and file metadata provided by TransferController.
     """
 
+    home_requested = Signal()
+
     # Active states in which a transfer can be cancelled
     CANCELLABLE_STATES = {
         TransferState.CREATING_SESSION,
@@ -54,6 +57,7 @@ class TransferPanel(BevelPanel):
     ) -> None:
         super().__init__(bevel_style=BevelStyle.RAISED, parent=parent)
         self._controller: Optional[TransferController] = None
+        self._has_shown_completion_alert: bool = False
 
         self._setup_ui()
         self.reset_display()
@@ -160,7 +164,7 @@ class TransferPanel(BevelPanel):
         metrics_grid.setColumnStretch(1, 1)
         root_layout.addLayout(metrics_grid)
 
-        # 5. Action Row (Cancel Button, initially disabled)
+        # 5. Action Row (Cancel/Home Button, initially disabled)
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 2, 0, 0)
         self._cancel_btn = QPushButton("Cancel")
@@ -217,7 +221,20 @@ class TransferPanel(BevelPanel):
         self._status_label.setText(format_transfer_state(state))
         if self._controller and self._controller.session_code:
             self.update_code(self._controller.session_code)
-        self._cancel_btn.setEnabled(state in self.CANCELLABLE_STATES)
+
+        is_completed = (
+            state == TransferState.COMPLETED
+            and self._controller is not None
+            and self._controller.session_info.integrity_verified is True
+        )
+
+        if is_completed:
+            self._cancel_btn.setText("Home")
+            self._cancel_btn.setEnabled(True)
+            self._check_completion_alert()
+        else:
+            self._cancel_btn.setText("Cancel")
+            self._cancel_btn.setEnabled(state in self.CANCELLABLE_STATES)
 
     def update_progress(self, progress: Optional[TransferProgress]) -> None:
         """Update progress bar percentage and metrics labels from real transfer data."""
@@ -248,14 +265,29 @@ class TransferPanel(BevelPanel):
         """Update integrity verification result (Verified, Failed, or —)."""
         if verified is True:
             self._integrity_label.setText("Verified")
+            if self._controller and self._controller.state == TransferState.COMPLETED:
+                self._cancel_btn.setText("Home")
+                self._cancel_btn.setEnabled(True)
+                self._check_completion_alert()
         elif verified is False:
             self._integrity_label.setText("Failed")
         else:
             self._integrity_label.setText("—")
 
+    def _check_completion_alert(self) -> None:
+        """Show completed transfer alert dialog once per session."""
+        if not self._has_shown_completion_alert:
+            self._has_shown_completion_alert = True
+            QMessageBox.information(
+                self,
+                "Transfer Completed",
+                "Transfer completed successfully.",
+            )
+
     def update_error(self, message: str) -> None:
         """Display error condition in status label."""
         self._status_label.setText(f"Transfer failed: {message}")
+        self._cancel_btn.setText("Cancel")
         self._cancel_btn.setEnabled(False)
 
     def reset_display(self) -> None:
@@ -270,9 +302,14 @@ class TransferPanel(BevelPanel):
         self._eta_label.setText("—")
         self._connection_label.setText("—")
         self._integrity_label.setText("—")
+        self._cancel_btn.setText("Cancel")
         self._cancel_btn.setEnabled(False)
+        self._has_shown_completion_alert = False
 
     def _on_cancel_clicked(self) -> None:
-        """Invoke controller cancel when Cancel button is clicked."""
-        if self._controller is not None:
+        """Invoke controller cancel or emit home_requested when button is clicked."""
+        if self._cancel_btn.text() == "Home":
+            self.home_requested.emit()
+        elif self._controller is not None:
             self._controller.cancel()
+

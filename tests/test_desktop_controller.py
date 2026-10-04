@@ -582,8 +582,80 @@ class TestDesktopStep3456(unittest.TestCase):
                     os.environ.pop("SIGNALING_URL", None)
                 get_settings.cache_clear()
 
+    def test_completion_button_transformation_and_home_signal(self) -> None:
+        """Verify that successful completion changes Cancel button to Home button and emits home_requested."""
+        from app.ui.widgets.transfer_panel import TransferPanel
+        ctrl = TransferController()
+        panel = TransferPanel(controller=ctrl)
+
+        # Initially Cancel button is disabled and text is Cancel
+        self.assertEqual(panel._cancel_btn.text(), "Cancel")
+        self.assertFalse(panel._cancel_btn.isEnabled())
+
+        from unittest.mock import patch
+        # Simulate completion with integrity verified
+        with patch.object(panel, "_check_completion_alert", wraps=panel._check_completion_alert) as mock_alert, \
+             patch("PySide6.QtWidgets.QMessageBox.information") as mock_msg:
+            self.assertTrue(ctrl.set_state(TransferState.CONNECTING))
+            self.assertTrue(ctrl.set_state(TransferState.TRANSFERRING))
+            ctrl.set_integrity_verified(True)
+            self.assertTrue(ctrl.set_state(TransferState.COMPLETED))
+            mock_alert.assert_called_once()
+
+        # Button should change to Home and be enabled
+        self.assertEqual(panel._cancel_btn.text(), "Home")
+        self.assertTrue(panel._cancel_btn.isEnabled())
+
+        # Clicking Home button should emit home_requested
+        home_emitted = False
+        def on_home():
+            nonlocal home_emitted
+            home_emitted = True
+        panel.home_requested.connect(on_home)
+
+        panel._cancel_btn.click()
+        self.assertTrue(home_emitted)
+
+    def test_session_reset_lifecycle_clears_all_state(self) -> None:
+        """Verify that controller reset and window navigation cleanly clear all session UI state."""
+        from app.ui.main_window import MainWindow
+        ctrl = TransferController()
+        win = MainWindow(controller=ctrl)
+
+        # Set up stale state on controller, receive view, and transfer panel
+        ctrl.select_file(file_path="dummy.bin", file_size=1024, file_name="dummy.bin")
+        ctrl.set_session_code("4AF8B2", role="sender")
+        win._code_input.setText("4AF8B2")
+
+        self.assertEqual(win._code_input.text(), "4AF8B2")
+        self.assertIsNotNone(ctrl.file_info)
+        self.assertEqual(ctrl.session_code, "4AF8B2")
+
+        # Navigate to home (or receive) which triggers session reset
+        win.navigate_to_home()
+
+        # Controller state must be reset to IDLE and fields cleared
+        self.assertEqual(ctrl.state, TransferState.IDLE)
+        self.assertIsNone(ctrl.file_info)
+        self.assertIsNone(ctrl.session_code)
+        self.assertIsNone(ctrl.progress)
+        self.assertIsNone(ctrl.error_message)
+
+        # Receiver code input and status labels in MainWindow must be cleared
+        self.assertEqual(win._code_input.text(), "")
+        self.assertEqual(win._receive_status_label.text(), "Waiting for transfer code")
+        self.assertEqual(win._file_name_label.text(), "No file selected")
+
+        # TransferPanel display must be back to neutral
+        self.assertEqual(win.transfer_panel._filename_label.text(), "No file selected")
+        self.assertEqual(win.transfer_panel._code_label.text(), "—")
+        self.assertEqual(win.transfer_panel._status_label.text(), "Ready")
+        self.assertEqual(win.transfer_panel._cancel_btn.text(), "Cancel")
+        self.assertFalse(win.transfer_panel._cancel_btn.isEnabled())
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
