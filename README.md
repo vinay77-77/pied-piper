@@ -128,7 +128,10 @@ Key configuration parameters (`backend/config.py`):
 | `SIGNALING_HOST` | `0.0.0.0` | Host to bind signaling server |
 | `SIGNALING_PORT` | `8000` | Port to bind signaling server |
 | `SIGNALING_URL` | `ws://localhost:8000/ws` | WebSocket endpoint for signaling |
-| `STUN_URLS` | `stun:stun.l.google.com:19302` | STUN server URLs for NAT traversal |
+| `STUN_URLS` | `stun:stun.l.google.com:19302,stun:stun.cloudflare.com:3478` | Comma-separated STUN server URLs for public IP discovery |
+| `TURN_URL` | `""` | TURN relay server URL(s) for Symmetric NAT/firewall traversal |
+| `TURN_USERNAME` | `""` | TURN server username |
+| `TURN_CREDENTIAL` | `""` | TURN server password/credential |
 | `CHUNK_SIZE_BYTES`| `16384` | Transfer chunk size (16 KB default) |
 | `SLIDING_WINDOW_SIZE` | `32` | Sliding window capacity |
 | `SQLITE_PATH` | `./pied_piper.db` | Local SQLite database path |
@@ -171,6 +174,31 @@ The signaling server must be running as a standalone service before launching th
        SIGNALING_URL=ws://<HOST_LAN_IP>:8000/ws python desktop/main.py
        ```
      Click **Receive File...**, enter the 6-character room code, and click **Continue**. Both peers negotiate direct WebRTC DataChannels and stream the file.
+
+---
+
+## Multi-Network Transfers & NAT Traversal (STUN / TURN)
+
+### 1. Same Network (LAN)
+- Direct P2P via local host candidates (`host <LAN_IP>:<port>`).
+- Does not require STUN or TURN. Fast, direct local throughput.
+
+### 2. Different Networks with Cone NAT
+- Direct P2P via STUN server-reflexive candidates (`srflx <PUBLIC_IP>:<port>`).
+- Default `STUN_URLS` queries Google (`port 19302`) and Cloudflare (`port 3478`).
+- Both peers discover their public IP:port mapping and establish bidirectional UDP hole-punching.
+
+### 3. Different Networks with Symmetric NAT / CGNAT / Enterprise Firewalls
+- When either peer is behind **Symmetric NAT** (common on 4G/5G mobile hotspots, corporate networks, and campus/institutional ISPs like BSNL/NKN) or an enterprise firewall that blocks inbound UDP:
+  - STUN hole punching **cannot succeed** because the NAT allocates different public ports per remote destination.
+  - A **TURN relay server** (RFC 8656) is **strictly required**.
+- To configure TURN, set the following environment variables in `.env` or in the terminal:
+  ```bash
+  TURN_URL=turn:relay.example.com:3478?transport=udp,turn:relay.example.com:3478?transport=tcp
+  TURN_USERNAME=my_turn_username
+  TURN_CREDENTIAL=my_turn_password
+  ```
+  When configured, peers gather `relay` candidates. If direct STUN hole-punching fails, WebRTC automatically falls back to encrypted relay via the TURN server.
 
 ---
 

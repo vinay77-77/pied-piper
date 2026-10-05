@@ -34,10 +34,10 @@ class Settings(BaseSettings):
 
     # WebRTC NAT traversal (STUN / TURN)
     stun_urls: Union[str, List[str]] = Field(
-        default="stun:stun.l.google.com:19302",
+        default="stun:stun.l.google.com:19302,stun:stun.cloudflare.com:3478",
         description="Comma-separated or list of STUN server URLs",
     )
-    turn_url: str = Field(default="", description="TURN server URL (if configured)")
+    turn_url: Union[str, List[str]] = Field(default="", description="TURN server URL (if configured)")
     turn_username: str = Field(default="", description="TURN server username")
     turn_credential: str = Field(default="", description="TURN server credential")
 
@@ -61,6 +61,15 @@ class Settings(BaseSettings):
             return self.stun_urls
         if isinstance(self.stun_urls, str):
             return [url.strip() for url in self.stun_urls.split(",") if url.strip()]
+        return []
+
+    @property
+    def turn_urls_list(self) -> List[str]:
+        """Return TURN URLs as a list of strings."""
+        if isinstance(self.turn_url, list):
+            return self.turn_url
+        if isinstance(self.turn_url, str):
+            return [url.strip() for url in self.turn_url.split(",") if url.strip()]
         return []
 
 

@@ -2,8 +2,13 @@
 
 import asyncio
 import logging
+import os
+import re
+import socket
 from typing import Any, Callable, Dict, List, Optional
 
+import aioice.ice
+import ifaddr
 from aiortc import (
     RTCConfiguration,
     RTCIceCandidate,
@@ -18,6 +23,84 @@ from backend.signaling.client import SignalingClient, SignalingError
 from backend.transport.data_channels import DataChannelManager
 
 logger = logging.getLogger(__name__)
+
+# Virtual / internal interface prefixes and subnets that should not be used as ICE host candidates
+VIRTUAL_IFACE_PATTERNS = ("vboxnet", "virtualbox", "docker", "br-", "virbr", "vmnet", "veth")
+VIRTUAL_IP_PREFIXES = ("192.168.56.", "169.254.")
+
+
+def filter_host_addresses(use_ipv4: bool, use_ipv6: bool) -> List[str]:
+    """Return local IP addresses excluding virtual host-only and container bridge adapters.
+
+    Prevents gathering unroutable host-only interfaces (e.g. VirtualBox, Docker host bridges)
+    that incur 5-second STUN timeouts and cannot route across networks.
+    Falls back to unfiltered list if all addresses would otherwise be excluded.
+    """
+    all_addresses: List[str] = []
+    filtered_addresses: List[str] = []
+
+    for adapter in ifaddr.get_adapters():
+        adapter_name = adapter.name.lower()
+        is_virtual_adapter = any(pattern in adapter_name for pattern in VIRTUAL_IFACE_PATTERNS)
+
+        for ip in adapter.ips:
+            if isinstance(ip.ip, str) and use_ipv4 and ip.ip != "127.0.0.1":
+                all_addresses.append(ip.ip)
+                is_virtual_ip = any(ip.ip.startswith(prefix) for prefix in VIRTUAL_IP_PREFIXES)
+                if not is_virtual_adapter and not is_virtual_ip:
+                    filtered_addresses.append(ip.ip)
+            elif use_ipv6 and ip.ip[0] != "::1" and ip.ip[2] == 0:
+                all_addresses.append(ip.ip[0])
+                if not is_virtual_adapter:
+                    filtered_addresses.append(ip.ip[0])
+
+    return filtered_addresses if filtered_addresses else all_addresses
+
+
+# Patch aioice get_host_addresses to use the clean host address filter
+aioice.ice.get_host_addresses = filter_host_addresses
+
+
+STUN_URL_REGEX = re.compile(r"^stun:(?P<host>[^:]+)(:(?P<port>[0-9]+))?$")
+
+
+def probe_single_stun(host: str, port: int, timeout: float = 0.35) -> bool:
+    """Send a lightweight 20-byte RFC 5389 STUN Binding Request to verify server responsiveness."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    tx_id = os.urandom(12)
+    req = b"\x00\x01\x00\x00\x21\x12\xa4\x42" + tx_id
+    try:
+        sock.sendto(req, (host, port))
+        data, _ = sock.recvfrom(512)
+        return len(data) >= 20 and data[:2] == b"\x01\x01"
+    except Exception:
+        return False
+    finally:
+        sock.close()
+
+
+def prioritize_stun_servers(stun_urls: List[str], timeout: float = 0.35) -> List[str]:
+    """Test STUN URLs and order the first responsive server at index 0.
+
+    Because aioice only uses the first STUN server in the RTCConfiguration list,
+    this ensures an accessible STUN endpoint is selected even if the primary URL
+    (or port 19302 vs 3478) is blocked by local firewalls.
+    """
+    if len(stun_urls) <= 1:
+        return list(stun_urls)
+
+    for url in stun_urls:
+        match = STUN_URL_REGEX.match(url.strip())
+        if not match:
+            continue
+        host = match.group("host")
+        port = int(match.group("port")) if match.group("port") else 3478
+        if probe_single_stun(host, port, timeout=timeout):
+            logger.debug("Prioritizing responsive STUN server: %s", url)
+            return [url] + [u for u in stun_urls if u != url]
+
+    return list(stun_urls)
 
 
 class PeerConnectionError(Exception):
@@ -34,15 +117,17 @@ class PeerConnectionWrapper:
 
         # Build STUN/TURN server configuration
         ice_servers: List[RTCIceServer] = []
-        for stun_url in self.settings.stun_urls_list:
+        ordered_stun = prioritize_stun_servers(self.settings.stun_urls_list)
+        for stun_url in ordered_stun:
             ice_servers.append(RTCIceServer(urls=stun_url))
 
-        if self.settings.turn_url:
+        turn_urls = self.settings.turn_urls_list
+        if turn_urls:
             ice_servers.append(
                 RTCIceServer(
-                    urls=self.settings.turn_url,
-                    username=self.settings.turn_username or None,
-                    credential=self.settings.turn_credential or None,
+                    urls=turn_urls if len(turn_urls) > 1 else turn_urls[0],
+                    username=self.settings.turn_username.strip() or None,
+                    credential=self.settings.turn_credential.strip() or None,
                 )
             )
 
@@ -246,6 +331,76 @@ class PeerConnectionWrapper:
             await self._apply_candidate(cand_data)
         self._pending_candidates.clear()
 
+    def _diagnose_ice_failure(self) -> str:
+        """Inspect local and remote SDP to diagnose why ICE failed to connect."""
+        try:
+            local_desc = self.pc.localDescription
+            local_sdp = local_desc.sdp if local_desc else ""
+        except Exception:
+            local_sdp = ""
+
+        try:
+            remote_desc = self.pc.remoteDescription
+            remote_sdp = remote_desc.sdp if remote_desc else ""
+        except Exception:
+            remote_sdp = ""
+
+        local_cands: List[str] = []
+        for line in local_sdp.splitlines():
+            if line.startswith("a=candidate:"):
+                try:
+                    c = candidate_from_sdp(line[12:])
+                    local_cands.append(f"{c.type}({c.ip}:{c.port})")
+                except Exception:
+                    pass
+
+        remote_cands: List[str] = []
+        for line in remote_sdp.splitlines():
+            if line.startswith("a=candidate:"):
+                try:
+                    c = candidate_from_sdp(line[12:])
+                    remote_cands.append(f"{c.type}({c.ip}:{c.port})")
+                except Exception:
+                    pass
+
+        has_local_srflx = any("srflx" in c for c in local_cands)
+        has_remote_srflx = any("srflx" in c for c in remote_cands)
+        has_local_relay = any("relay" in c for c in local_cands)
+        has_remote_relay = any("relay" in c for c in remote_cands)
+
+        details = f"[Local candidates: {', '.join(local_cands) or 'none'} | Remote candidates: {', '.join(remote_cands) or 'none'}]"
+
+        if has_local_relay or has_remote_relay:
+            return f"{details} TURN relay candidate was present, but relay connection check failed. Verify TURN credentials and connectivity."
+
+        if has_local_srflx and has_remote_srflx:
+            return (
+                f"{details} Both peers gathered STUN public candidates, but direct P2P checks failed. "
+                "This indicates Symmetric NAT, Carrier-Grade NAT (CGNAT), or firewall UDP blocking between the networks. "
+                "A TURN relay server is required for this network environment (configure TURN_URL in .env)."
+            )
+
+        if not has_local_srflx and not has_remote_srflx:
+            return (
+                f"{details} Neither peer gathered public (srflx) candidates. "
+                "Direct connection across different networks is impossible without public or relay candidates. "
+                "Check STUN server configuration or ensure peers are on the same local network."
+            )
+
+        if not has_remote_srflx:
+            return (
+                f"{details} Remote peer did not gather any public (srflx) candidates (only private host candidates). "
+                "The remote peer's network may be blocking STUN UDP queries. A TURN relay server is required."
+            )
+
+        if not has_local_srflx:
+            return (
+                f"{details} Local peer did not gather any public (srflx) candidates. "
+                "Local network may be blocking STUN UDP queries. A TURN relay server is required."
+            )
+
+        return details
+
     async def wait_connected(self, timeout: float = 30.0) -> None:
         """Wait until connection reaches 'connected' or 'completed' state."""
         if self.is_connected:
@@ -263,11 +418,15 @@ class PeerConnectionWrapper:
         for task in pending:
             task.cancel()
 
-        if not done:
-            raise PeerConnectionError(f"WebRTC connection timed out after {timeout}s (state: {self.pc.connectionState})")
-
-        if self._failed_event.is_set():
-            raise PeerConnectionError(f"WebRTC connection failed (state: {self.pc.connectionState})")
+        if not done or self._failed_event.is_set():
+            diag = self._diagnose_ice_failure()
+            state_msg = f"state: {self.pc.connectionState}, iceState: {self.pc.iceConnectionState}"
+            if not done:
+                logger.error("WebRTC connection timed out after %.1fs (%s). %s", timeout, state_msg, diag)
+                raise PeerConnectionError(f"WebRTC connection timed out after {timeout}s ({state_msg}). {diag}")
+            else:
+                logger.error("WebRTC connection failed (%s). %s", state_msg, diag)
+                raise PeerConnectionError(f"WebRTC connection failed ({state_msg}). {diag}")
 
     async def wait_channels_open(self, timeout: float = 15.0) -> None:
         """Wait until both control and data channels are open."""
