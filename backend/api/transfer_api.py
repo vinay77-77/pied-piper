@@ -86,9 +86,9 @@ async def start_send_session(
                 return
             elapsed = max(time.time() - start_time, 0.001)
             bytes_transferred = min(chunks_sent * settings.chunk_size_bytes, file_size) if chunks_sent < total_chunks else file_size
-            speed_bps = (bytes_transferred * 8.0) / elapsed
+            speed_bps = bytes_transferred / elapsed
             remaining_bytes = max(0, file_size - bytes_transferred)
-            eta_seconds = (remaining_bytes * 8.0) / speed_bps if speed_bps > 0 and remaining_bytes > 0 else (0.0 if remaining_bytes == 0 else None)
+            eta_seconds = remaining_bytes / speed_bps if speed_bps > 0 and remaining_bytes > 0 else (0.0 if remaining_bytes == 0 else None)
             callbacks.on_progress(bytes_transferred, file_size, speed_bps, eta_seconds)
 
         sender = FileSender(
@@ -163,15 +163,28 @@ async def start_receive_session(
 
         start_time = time.time()
 
+        receiver_ref = []
+
         def progress_adapter(percent: float, chunks_received: int, total_chunks: int) -> None:
             if not callbacks.on_progress:
                 return
             elapsed = max(time.time() - start_time, 0.001)
             approx_total_bytes = total_chunks * settings.chunk_size_bytes
             bytes_transferred = min(chunks_received * settings.chunk_size_bytes, approx_total_bytes) if chunks_received < total_chunks else approx_total_bytes
-            speed_bps = (bytes_transferred * 8.0) / elapsed
+            
+            if receiver_ref and hasattr(receiver_ref[0], "checkpoint") and receiver_ref[0].checkpoint:
+                chk = receiver_ref[0].checkpoint
+                bytes_transferred = chk.bytes_written
+                if chunks_received > 0:
+                    avg_chunk = bytes_transferred / chunks_received
+                    approx_total_bytes = int(total_chunks * avg_chunk)
+            
+            if chunks_received >= total_chunks and total_chunks > 0:
+                approx_total_bytes = bytes_transferred
+
+            speed_bps = bytes_transferred / elapsed
             remaining_bytes = max(0, approx_total_bytes - bytes_transferred)
-            eta_seconds = (remaining_bytes * 8.0) / speed_bps if speed_bps > 0 and remaining_bytes > 0 else (0.0 if remaining_bytes == 0 else None)
+            eta_seconds = remaining_bytes / speed_bps if speed_bps > 0 and remaining_bytes > 0 else (0.0 if remaining_bytes == 0 else None)
             callbacks.on_progress(bytes_transferred, approx_total_bytes, speed_bps, eta_seconds)
 
         receiver = FileReceiver(
@@ -179,6 +192,7 @@ async def start_receive_session(
             output_dir=output_dir,
             progress_callback=progress_adapter,
         )
+        receiver_ref.append(receiver)
 
         summary = await receiver.receive(timeout=timeout)
 
