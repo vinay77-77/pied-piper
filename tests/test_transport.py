@@ -369,3 +369,70 @@ async def test_turn_configuration_initialization():
     finally:
         await wrapper.close()
 
+
+def test_metered_turn_endpoints_default():
+    """Verify that default Settings contains all four Metered/OpenRelay endpoints."""
+    settings = Settings(_env_file=None)
+    urls = settings.turn_urls_list
+    assert len(urls) == 4
+    assert "turn:global.relay.metered.ca:80?transport=udp" in urls
+    assert "turn:global.relay.metered.ca:80?transport=tcp" in urls
+    assert "turn:global.relay.metered.ca:443?transport=udp" in urls
+    assert "turns:global.relay.metered.ca:443?transport=tcp" in urls
+
+
+@pytest.mark.asyncio
+async def test_turn_not_initialized_without_credentials():
+    """Verify that TURN is not added to iceServers if username/credential are unset."""
+    settings = Settings(
+        turn_username="",
+        turn_credential="",
+        _env_file=None,
+    )
+    wrapper = PeerConnectionWrapper(settings=settings, role="send")
+    try:
+        turn_servers = [s for s in wrapper.configuration.iceServers if any("turn:" in u or "turns:" in u for u in (s.urls if isinstance(s.urls, list) else [s.urls]))]
+        assert len(turn_servers) == 0
+    finally:
+        await wrapper.close()
+
+
+@pytest.mark.asyncio
+async def test_peer_connection_mode_property():
+    """Verify connection_mode property accurately reports Relay (TURN), P2P (STUN), and P2P (LAN)."""
+    from unittest.mock import MagicMock, PropertyMock, patch
+    from aiortc import RTCPeerConnection
+
+    wrapper = PeerConnectionWrapper(role="send")
+    try:
+        class MockCandidate:
+            def __init__(self, c_type):
+                self.type = c_type
+
+        class MockPair:
+            def __init__(self, local_t, remote_t):
+                self.local_candidate = MockCandidate(local_t)
+                self.remote_candidate = MockCandidate(remote_t)
+
+        mock_sctp = MagicMock()
+        conn = MagicMock()
+        mock_sctp.transport.transport._connection = conn
+
+        with patch.object(RTCPeerConnection, "sctp", new_callable=PropertyMock) as m_sctp:
+            m_sctp.return_value = mock_sctp
+
+            # 1. TURN Relay pair
+            conn._nominated = {1: MockPair("relay", "host")}
+            assert wrapper.connection_mode == "Relay (TURN)"
+
+            # 2. STUN srflx pair
+            conn._nominated = {1: MockPair("srflx", "srflx")}
+            assert wrapper.connection_mode == "P2P (STUN)"
+
+            # 3. LAN host pair
+            conn._nominated = {1: MockPair("host", "host")}
+            assert wrapper.connection_mode == "P2P (LAN)"
+    finally:
+        await wrapper.close()
+
+

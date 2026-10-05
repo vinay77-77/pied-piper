@@ -57,6 +57,7 @@ class TestTransferAPIIntegration(unittest.TestCase):
 
         mock_pc = AsyncMock()
         mock_pc.channels = MagicMock()
+        mock_pc.connection_mode = "P2P"
         mock_establish.return_value = mock_pc
 
         mock_summary = TransferSummary(

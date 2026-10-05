@@ -61,6 +61,131 @@ def filter_host_addresses(use_ipv4: bool, use_ipv6: bool) -> List[str]:
 aioice.ice.get_host_addresses = filter_host_addresses
 
 
+# -----------------------------------------------------------------------------
+# Multi-endpoint TURN Gathering Support for aiortc & aioice
+# -----------------------------------------------------------------------------
+import aioice.turn
+from aiortc import rtcicetransport
+
+orig_connection_kwargs = rtcicetransport.connection_kwargs
+
+
+def patched_connection_kwargs(servers: List[RTCIceServer]) -> Dict[str, Any]:
+    """Parse all TURN server URIs into kwargs['turn_servers'] so all transports are gathered."""
+    kwargs = orig_connection_kwargs(servers)
+    all_turns: List[tuple] = []
+    for server in servers:
+        uris = server.urls if isinstance(server.urls, list) else [server.urls]
+        for uri in uris:
+            try:
+                parsed = rtcicetransport.parse_stun_turn_uri(uri)
+                if parsed["scheme"] in ["turn", "turns"]:
+                    ssl_flag = (parsed["scheme"] == "turns")
+                    transport = parsed["transport"]
+                    all_turns.append(
+                        ((parsed["host"], parsed["port"]), server.username, server.credential, ssl_flag, transport)
+                    )
+            except Exception:
+                pass
+    if all_turns:
+        kwargs["turn_servers"] = all_turns
+    return kwargs
+
+
+rtcicetransport.connection_kwargs = patched_connection_kwargs
+
+orig_connection_init = aioice.ice.Connection.__init__
+
+
+def patched_connection_init(self, *args, turn_servers=None, **kwargs):
+    orig_connection_init(self, *args, **kwargs)
+    self.turn_servers = turn_servers or []
+    if not self.turn_servers and self.turn_server:
+        self.turn_servers = [(self.turn_server, self.turn_username, self.turn_password, self.turn_ssl, self.turn_transport)]
+
+
+aioice.ice.Connection.__init__ = patched_connection_init
+
+orig_get_component_candidates = aioice.ice.Connection.get_component_candidates
+
+
+async def patched_get_component_candidates(self, component: int, addresses: List[str], timeout: int = 5) -> List[Any]:
+    turn_servers = getattr(self, "turn_servers", [])
+    if not turn_servers:
+        return await orig_get_component_candidates(self, component, addresses, timeout=timeout)
+
+    candidates = []
+    loop = asyncio.get_event_loop()
+
+    host_protocols = []
+    for address in addresses:
+        try:
+            transport, protocol = await loop.create_datagram_endpoint(
+                lambda: aioice.ice.StunProtocol(self), local_addr=(address, 0)
+            )
+            sock = transport.get_extra_info("socket")
+            if sock is not None:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, aioice.turn.UDP_SOCKET_BUFFER_SIZE)
+        except OSError:
+            continue
+        host_protocols.append(protocol)
+
+        candidate_address = protocol.transport.get_extra_info("sockname")
+        protocol.local_candidate = aioice.ice.Candidate(
+            foundation=aioice.ice.candidate_foundation("host", "udp", candidate_address[0]),
+            component=component,
+            transport="udp",
+            priority=aioice.ice.candidate_priority(component, "host"),
+            host=candidate_address[0],
+            port=candidate_address[1],
+            type="host",
+        )
+        if self._transport_policy == aioice.ice.TransportPolicy.ALL:
+            candidates.append(protocol.local_candidate)
+    self._protocols += host_protocols
+
+    tasks = []
+    if self.stun_server:
+        for protocol in host_protocols:
+            if aioice.ice.ipaddress.ip_address(protocol.local_candidate.host).version == 4:
+                tasks.append(
+                    asyncio.create_task(
+                        aioice.ice.server_reflexive_candidate(protocol, self.stun_server)
+                    )
+                )
+
+    for srv, user, pwd, ssl_flag, trans in turn_servers:
+        tasks.append(
+            asyncio.create_task(
+                aioice.ice.relayed_candidate(
+                    component=component,
+                    protocol_factory=lambda: aioice.ice.StunProtocol(self),
+                    turn_server=srv,
+                    turn_username=user,
+                    turn_password=pwd,
+                    turn_ssl=ssl_flag,
+                    turn_transport=trans,
+                )
+            )
+        )
+
+    if len(tasks):
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        for task in done:
+            if task.exception() is None:
+                candidate, protocol = task.result()
+                candidates.append(candidate)
+                if protocol is not None:
+                    self._protocols.append(protocol)
+        for task in pending:
+            task.cancel()
+
+    return candidates
+
+
+aioice.ice.Connection.get_component_candidates = patched_get_component_candidates
+
+
 STUN_URL_REGEX = re.compile(r"^stun:(?P<host>[^:]+)(:(?P<port>[0-9]+))?$")
 
 
@@ -122,12 +247,12 @@ class PeerConnectionWrapper:
             ice_servers.append(RTCIceServer(urls=stun_url))
 
         turn_urls = self.settings.turn_urls_list
-        if turn_urls:
+        if turn_urls and self.settings.turn_username.strip() and self.settings.turn_credential.strip():
             ice_servers.append(
                 RTCIceServer(
                     urls=turn_urls if len(turn_urls) > 1 else turn_urls[0],
-                    username=self.settings.turn_username.strip() or None,
-                    credential=self.settings.turn_credential.strip() or None,
+                    username=self.settings.turn_username.strip(),
+                    credential=self.settings.turn_credential.strip(),
                 )
             )
 
@@ -252,6 +377,33 @@ class PeerConnectionWrapper:
             self.pc.connectionState in ("connected", "completed")
             or self.pc.iceConnectionState in ("connected", "completed")
         )
+
+    @property
+    def connection_mode(self) -> str:
+        """Return the active connection mode: 'P2P (LAN)', 'P2P (STUN)', 'Relay (TURN)', or 'P2P'."""
+        try:
+            if self.pc.sctp and self.pc.sctp.transport:
+                dtls_transport = self.pc.sctp.transport
+                ice_transport = getattr(dtls_transport, "transport", None)
+                connection = getattr(ice_transport, "_connection", None)
+                nominated = getattr(connection, "_nominated", None)
+                if nominated:
+                    pair = nominated.get(1) or (list(nominated.values())[0] if nominated else None)
+                    if pair:
+                        local_cand = getattr(pair, "local_candidate", None)
+                        remote_cand = getattr(pair, "remote_candidate", None)
+                        local_type = getattr(local_cand, "type", "unknown")
+                        remote_type = getattr(remote_cand, "type", "unknown")
+
+                        if local_type == "relay" or remote_type == "relay":
+                            return "Relay (TURN)"
+                        elif local_type in ("srflx", "prflx") or remote_type in ("srflx", "prflx"):
+                            return "P2P (STUN)"
+                        elif local_type == "host" and remote_type == "host":
+                            return "P2P (LAN)"
+        except Exception:
+            pass
+        return "P2P"
 
     async def create_offer(self) -> Dict[str, Any]:
         """Create SDP offer, set local description, and return offer signal dictionary."""

@@ -76,7 +76,7 @@ async def start_send_session(
         )
 
         if callbacks.on_connected:
-            callbacks.on_connected("P2P")
+            callbacks.on_connected(pc_wrapper.connection_mode)
 
         start_time = time.time()
         file_size = filepath.stat().st_size if filepath.exists() else 0
@@ -159,7 +159,7 @@ async def start_receive_session(
         )
 
         if callbacks.on_connected:
-            callbacks.on_connected("P2P")
+            callbacks.on_connected(pc_wrapper.connection_mode)
 
         start_time = time.time()
 

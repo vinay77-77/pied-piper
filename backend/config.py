@@ -12,6 +12,14 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+DEFAULT_TURN_URLS = (
+    "turn:global.relay.metered.ca:80?transport=udp,"
+    "turn:global.relay.metered.ca:80?transport=tcp,"
+    "turn:global.relay.metered.ca:443?transport=udp,"
+    "turns:global.relay.metered.ca:443?transport=tcp"
+)
+
+
 class Settings(BaseSettings):
     """Application settings with type validation and defaults."""
 
@@ -37,7 +45,10 @@ class Settings(BaseSettings):
         default="stun:stun.l.google.com:19302,stun:stun.cloudflare.com:3478",
         description="Comma-separated or list of STUN server URLs",
     )
-    turn_url: Union[str, List[str]] = Field(default="", description="TURN server URL (if configured)")
+    turn_url: Union[str, List[str]] = Field(
+        default=DEFAULT_TURN_URLS,
+        description="TURN server URL(s) (comma-separated or list)",
+    )
     turn_username: str = Field(default="", description="TURN server username")
     turn_credential: str = Field(default="", description="TURN server credential")
 
