@@ -264,8 +264,6 @@ class FileReceiver:
             await self.state_store.update_transfer_status(transfer_id, "completed")
 
         except Exception:
-            if part_path.exists():
-                part_path.unlink(missing_ok=True)
             await self.state_store.update_file_status(manifest.file_id, "failed")
             await self.state_store.update_transfer_status(transfer_id, "failed")
             raise
@@ -349,8 +347,6 @@ class FileReceiver:
             part_path.replace(final_path)
 
         except Exception:
-            if part_path.exists():
-                part_path.unlink(missing_ok=True)
             raise
 
         duration = max(time.time() - start_time, 0.001)

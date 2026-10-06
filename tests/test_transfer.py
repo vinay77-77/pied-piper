@@ -181,10 +181,10 @@ async def test_corrupted_chunk_detection(tmp_path: Path):
                 receiver.receive(timeout=5.0),
             )
 
-        # Verify part file was cleaned up and final file was NOT created
+        # Verify part file was NOT cleaned up to allow resume and final file was NOT created
         assert not (receiver_dir / "corrupted_test.dat").exists()
         part_files = list(receiver_dir.glob(".*.part"))
-        assert len(part_files) == 0
+        assert len(part_files) == 1
 
     finally:
         await pc1.close()
