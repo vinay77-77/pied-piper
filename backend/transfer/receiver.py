@@ -16,6 +16,7 @@ from backend.protocol.framing import (
     FileOfferMessage,
     FileRejectMessage,
     FileStartMessage,
+    ResumeOffsetMessage,
     TransferAcceptMessage,
     TransferCompleteMessage,
     TransferErrorMessage,
@@ -114,27 +115,64 @@ class FileReceiver:
         self.checkpoint = ReceiverCheckpoint(total_chunks=manifest.total_chunks)
         chunk_hashes = manifest.chunk_hashes or []
 
-        # 3. Persist initial transfer state to SQLite (§6.1)
-        await self.state_store.record_transfer(transfer_id, role="receiver", status="in_progress")
-        await self.state_store.record_file(
-            file_id=manifest.file_id,
-            transfer_id=transfer_id,
-            filename=sanitized_name,
-            file_path=final_path,
-            size_bytes=manifest.size,
-            total_chunks=manifest.total_chunks,
-            chunk_size_bytes=manifest.chunk_size,
-            sha256=manifest.sha256,
-            highest_verified_chunk=-1,
-            status="in_progress",
-        )
-        if chunk_hashes:
-            hashes_to_insert = [(idx, h, 0) for idx, h in enumerate(chunk_hashes)]
-            await self.state_store.record_chunk_hashes_batch(manifest.file_id, hashes_to_insert)
+        # 3. Check for existing resumable state
+        existing_file = await self.state_store.get_file(manifest.file_id)
 
-        # 4. Accept transfer offer
-        accept_msg = TransferAcceptMessage(transfer_id=transfer_id)
-        self.channels.send_control(accept_msg.model_dump())
+        is_resumable = False
+        resume_from_chunk = 0
+
+        if existing_file and existing_file["status"] == "in_progress":
+            if (existing_file["size_bytes"] == manifest.size and
+                existing_file.get("sha256") == manifest.sha256 and
+                part_path.is_file()):
+                highest_verified = existing_file["highest_verified_chunk"]
+                if 0 <= highest_verified < manifest.total_chunks:
+                    is_resumable = True
+                    resume_from_chunk = highest_verified + 1
+
+        if is_resumable:
+            logger.info(
+                "Resuming transfer %s: file '%s' from chunk %d",
+                transfer_id, manifest.file_id, resume_from_chunk
+            )
+            # Update transfer association so progress events and queries map to the new transfer
+            await self.state_store.record_transfer(transfer_id, role="receiver", status="in_progress")
+
+            # Since state_store.record_file does not update transfer_id on conflict,
+            # we must explicitly update it if the schema allows, or note it.
+            # For now we just initialize the checkpoint.
+            self.checkpoint.highest_verified_chunk = highest_verified
+            self.checkpoint.bytes_written = (highest_verified + 1) * manifest.chunk_size
+
+            # 4. Request resume via control channel
+            resume_msg = ResumeOffsetMessage(
+                transfer_id=transfer_id,
+                file_id=manifest.file_id,
+                resume_from_chunk=resume_from_chunk,
+            )
+            self.channels.send_control(resume_msg.model_dump())
+        else:
+            # 3. Persist initial transfer state to SQLite (§6.1)
+            await self.state_store.record_transfer(transfer_id, role="receiver", status="in_progress")
+            await self.state_store.record_file(
+                file_id=manifest.file_id,
+                transfer_id=transfer_id,
+                filename=sanitized_name,
+                file_path=final_path,
+                size_bytes=manifest.size,
+                total_chunks=manifest.total_chunks,
+                chunk_size_bytes=manifest.chunk_size,
+                sha256=manifest.sha256,
+                highest_verified_chunk=-1,
+                status="in_progress",
+            )
+            if chunk_hashes:
+                hashes_to_insert = [(idx, h, 0) for idx, h in enumerate(chunk_hashes)]
+                await self.state_store.record_chunk_hashes_batch(manifest.file_id, hashes_to_insert)
+
+            # 4. Accept transfer offer
+            accept_msg = TransferAcceptMessage(transfer_id=transfer_id)
+            self.channels.send_control(accept_msg.model_dump())
 
         # 5. Await FileStartMessage
         start_str = await self.channels.receive_control(timeout=timeout)
@@ -151,8 +189,15 @@ class FileReceiver:
         chunk_hashes = manifest.chunk_hashes or []
 
         try:
-            with part_path.open("wb") as part_file:
-                for expected_index in range(manifest.total_chunks):
+            open_mode = "ab" if is_resumable else "wb"
+            with part_path.open(open_mode) as part_file:
+                # Rehash existing file content up to resume_from_chunk if resuming
+                if is_resumable and resume_from_chunk > 0:
+                    with part_path.open("rb") as read_file:
+                        data = read_file.read(resume_from_chunk * manifest.chunk_size)
+                        running_hasher.update(data)
+
+                for expected_index in range(resume_from_chunk, manifest.total_chunks):
                     # Receive binary frame from data channel
                     frame_bytes = await self.channels.receive_data(timeout=timeout)
                     fid, chunk_index, payload = unpack_data_frame(frame_bytes)
